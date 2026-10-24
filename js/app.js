@@ -55,30 +55,6 @@ export class App {
       });
     }
 
-    // 初回モーダル: 現在地を取得して開始
-    const btnModalLocation = document.getElementById('btn-modal-location');
-    if (btnModalLocation) {
-      btnModalLocation.addEventListener('click', async () => {
-        UIController.hideWelcomeModal();
-        await this.getCurrentLocation(false);
-      });
-    }
-
-    // 初回モーダル: 現在地を取得せずに開始 (初期地点)
-    const btnModalDefault = document.getElementById('btn-modal-default');
-    if (btnModalDefault) {
-      btnModalDefault.addEventListener('click', async () => {
-        UIController.hideWelcomeModal();
-        await this.updateLocation(
-          APP_CONFIG.DEFAULT_LAT,
-          APP_CONFIG.DEFAULT_LNG,
-          '新大阪駅周辺 (初期地点)',
-          APP_CONFIG.DEFAULT_ZOOM,
-          APP_CONFIG.DEFAULT_PREF_CODE
-        );
-      });
-    }
-
     // モバイル用サイドバートグル
     const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
     if (btnToggleSidebar) {
@@ -162,7 +138,6 @@ export class App {
       if (searchInput) {
         searchInput.value = address;
       }
-      UIController.hideWelcomeModal();
       await this.searchAddress(address);
       return;
     }
@@ -174,14 +149,13 @@ export class App {
       const zoom = parseInt(params.get('zoom') || String(APP_CONFIG.DEFAULT_ZOOM), 10);
 
       if (!isNaN(lat) && !isNaN(lng)) {
-        UIController.hideWelcomeModal();
         await this.updateLocation(lat, lng, '指定地点', zoom);
         return;
       }
     }
 
-    // 3. パラメータ指定がない場合はウェルカムモーダルを表示
-    UIController.showWelcomeModal();
+    // 3. パラメータ指定がない場合は自動で現在地取得を開始（取得不可時は初期地点へフォールバック）
+    await this.getCurrentLocation(false);
   }
 
   /**
@@ -215,11 +189,15 @@ export class App {
 
   /**
    * 現在地取得の実行フロー
-   * @param {boolean} isUserInitiated - ユーザーの明示的操作かどうか
+   * @param {boolean} isUserInitiated - ユーザーの明示的操作（ボタン押下）かどうか
    */
   static async getCurrentLocation(isUserInitiated = true) {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      UIController.showToast('お使いのブラウザは位置情報取得に対応していません', true);
+      if (isUserInitiated) {
+        UIController.showToast('お使いのブラウザは位置情報取得に対応していません', true);
+      } else {
+        UIController.showToast('位置情報に対応していないため、初期地点（新大阪駅周辺）で開始します');
+      }
       await this.updateLocation(
         APP_CONFIG.DEFAULT_LAT,
         APP_CONFIG.DEFAULT_LNG,
@@ -230,7 +208,7 @@ export class App {
       return;
     }
 
-    UIController.showLoading('現在地を取得中...');
+    UIController.showLoading(isUserInitiated ? '現在地を取得中...' : '位置情報を取得中...');
 
     navigator.geolocation.getCurrentPosition(
       async (position) => {
@@ -243,7 +221,7 @@ export class App {
         let errorMessage = '現在地を取得できませんでした。';
         switch (error.code) {
           case error.PERMISSION_DENIED:
-            errorMessage = '位置情報の利用が許可されませんでした。設定をご確認ください。';
+            errorMessage = '位置情報の利用が許可されませんでした。';
             break;
           case error.POSITION_UNAVAILABLE:
             errorMessage = '端末の位置情報を特定できませんでした。';
@@ -253,10 +231,11 @@ export class App {
             break;
         }
 
-        UIController.showToast(errorMessage, true);
-
-        // ユーザーの手動押下でない場合（初回起動モーダル等）は新大阪駅へフォールバック
-        if (!isUserInitiated) {
+        if (isUserInitiated) {
+          UIController.showToast(`${errorMessage}設定をご確認ください。`, true);
+        } else {
+          // 自動取得時：取得できない場合は使わないモード（初期地点）で動作
+          UIController.showToast('位置情報が取得できなかったため、初期地点（新大阪駅周辺）で開始します');
           await this.updateLocation(
             APP_CONFIG.DEFAULT_LAT,
             APP_CONFIG.DEFAULT_LNG,
