@@ -237,8 +237,9 @@ export class MapService {
           </div>
           <a href="https://www.google.com/maps/dir/?api=1&destination=${shelter.lat},${shelter.lng}"
              target="_blank" rel="noopener noreferrer"
-             class="inline-flex items-center justify-center w-full text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white py-1.5 px-3 rounded shadow-sm transition">
-            <i class="fa-solid fa-route mr-1.5"></i>Googleマップで案内
+             class="popup-gmap-btn inline-flex items-center justify-center w-full text-xs font-semibold bg-blue-700 hover:bg-blue-800 text-white py-1.5 px-3 rounded shadow-sm transition"
+             style="color: #ffffff !important; text-decoration: none !important;">
+            <i class="fa-solid fa-route mr-1.5" style="color: #ffffff !important;"></i>Googleマップで案内
           </a>
         </div>
       `;
