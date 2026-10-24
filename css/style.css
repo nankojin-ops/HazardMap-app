@@ -104,7 +104,7 @@ html, body {
 }
 
 /* ==========================================================================
-   検索候補一覧ドロップダウン
+   検索候補一覧ドロップダウン & バックドロップ
    ========================================================================== */
 #search-results-dropdown {
   backdrop-filter: blur(8px);
@@ -112,7 +112,10 @@ html, body {
   transition: opacity 0.15s ease-in-out, transform 0.15s ease-in-out;
 }
 
+/* 検索候補アイテム: モバイルタッチターゲット最適化 (Apple HIG / WCAG 準拠 48px以上) */
 .search-result-item {
+  min-height: 48px;
+  -webkit-tap-highlight-color: rgba(59, 130, 246, 0.15);
   transition: background-color 0.15s ease, border-color 0.15s ease;
   cursor: pointer;
 }
@@ -123,6 +126,11 @@ html, body {
 }
 
 .search-result-item:active {
-  background-color: #e0effe;
+  background-color: #dbeafe; /* Tailwind blue-100 相当 */
+}
+
+/* 検索候補バックドロップのアニメーション */
+#search-backdrop {
+  transition: opacity 0.2s ease-in-out;
 }
 

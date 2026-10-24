@@ -25,33 +25,34 @@
        ヘッダー (ナビゲーション・住所検索・現在地ボタン)
        ※ ユーザーマスター関連 (user-badge 等) は完全に排除
        ====================================================================== -->
-  <header class="h-16 bg-white border-b border-gray-200 px-4 flex items-center justify-between z-30 shadow-sm shrink-0">
-    <div class="flex items-center gap-3">
+  <header class="h-16 bg-white border-b border-gray-200 px-2 sm:px-4 flex items-center justify-between z-40 shadow-sm shrink-0">
+    <div class="flex items-center gap-2 sm:gap-3 shrink-0">
       <!-- モバイル用サイドバートグルボタン -->
       <button id="btn-toggle-sidebar" class="lg:hidden p-2 rounded-md hover:bg-gray-100 text-gray-600 focus:outline-none" aria-label="メニュー開閉">
         <i class="fa-solid fa-bars text-lg"></i>
       </button>
 
       <!-- アプリケーションロゴ & タイトル -->
-      <div class="flex items-center gap-2.5 cursor-pointer" id="header-logo">
-        <div class="w-9 h-9 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-sm">
+      <div class="flex items-center gap-2 sm:gap-2.5 cursor-pointer" id="header-logo">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-sm shrink-0">
           <i class="fa-solid fa-shield-halved text-lg"></i>
         </div>
         <div>
-          <h1 class="font-extrabold text-base md:text-lg text-gray-900 tracking-tight leading-tight">防災ハザードマップ</h1>
+          <!-- モバイル時は hidden、タブレット・PC (sm以上) で表示 -->
+          <h1 class="font-extrabold text-base md:text-lg text-gray-900 tracking-tight leading-tight hidden sm:block">防災ハザードマップ</h1>
           <p class="text-[10px] text-gray-500 hidden sm:block">国土地理院オープンデータ連携ナビ</p>
         </div>
       </div>
     </div>
 
-    <!-- 住所・施設名 検索バー & 候補ドロップダウンコンテナ -->
-    <div class="flex-1 max-w-md mx-3 relative" id="search-container">
+    <!-- 住所・施設名 検索バー & 候補ドロップダウンコンテナ: マージンを mx-1.5 sm:mx-3 に最適化 -->
+    <div class="flex-1 max-w-md mx-1.5 sm:mx-3 relative" id="search-container">
       <form id="search-form" class="relative flex items-center">
         <input
           type="text"
           id="search-input"
           placeholder="住所・駅名・施設名を入力して検索..."
-          class="w-full pl-9 pr-10 py-1.5 text-xs sm:text-sm bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
+          class="w-full pl-9 pr-14 py-1.5 text-xs sm:text-sm bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
           autocomplete="off"
           aria-autocomplete="list"
           aria-controls="search-results-dropdown"
@@ -69,10 +70,10 @@
         </button>
       </form>
 
-      <!-- 候補一覧ドロップダウン (初期状態: hidden) -->
+      <!-- 候補一覧ドロップダウン: モバイルは fixed inset-x-2 top-[60px]、デスクトップは sm:absolute sm:inset-x-0 sm:top-full -->
       <div
         id="search-results-dropdown"
-        class="absolute left-0 right-0 top-full mt-1.5 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden hidden max-h-80 overflow-y-auto divide-y divide-gray-100"
+        class="fixed inset-x-2 top-[60px] sm:absolute sm:inset-x-0 sm:left-0 sm:right-0 sm:top-full sm:mt-1.5 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden hidden max-h-[70vh] sm:max-h-80 overflow-y-auto divide-y divide-gray-100"
         role="listbox"
         aria-label="検索候補一覧"
       >
@@ -81,10 +82,10 @@
     </div>
 
     <!-- 現在地取得ボタン -->
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 shrink-0">
       <button
         id="btn-current-location"
-        class="flex items-center gap-1.5 px-3 py-1.5 text-xs sm:text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg font-semibold shadow-sm transition active:scale-95"
+        class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg font-semibold shadow-sm transition active:scale-95 shrink-0"
         title="ブラウザの位置情報から現在地を取得"
       >
         <i class="fa-solid fa-location-crosshairs text-indigo-600"></i>
@@ -92,6 +93,13 @@
       </button>
     </div>
   </header>
+
+  <!-- 検索候補用半透明バックドロップ (モバイル用、初期状態: hidden、デスクトップ時は常に非表示) -->
+  <div
+    id="search-backdrop"
+    class="fixed inset-0 bg-black/40 z-30 hidden sm:hidden"
+    aria-hidden="true"
+  ></div>
 
   <!-- ======================================================================
        メインコンテンツ領域 (サイドバー + 地図コンテナ)

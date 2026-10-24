@@ -293,12 +293,13 @@ export class UIController {
   }
 
   /**
-   * 検索バー直下に候補一覧ドロップダウンを表示する (新規メソッド)
+   * 検索候補一覧およびバックドロップを表示する（改訂）
    * @param {Array<Object>} candidates - 表示候補一覧
    * @param {(candidate: Object) => void} onSelect - 選択時コールバック
    */
   static showSearchResults(candidates, onSelect) {
     const dropdown = document.getElementById('search-results-dropdown');
+    const backdrop = document.getElementById('search-backdrop');
     const searchInput = document.getElementById('search-input');
 
     if (!dropdown) {
@@ -318,7 +319,7 @@ export class UIController {
 
     candidates.forEach((candidate) => {
       const item = document.createElement('div');
-      item.className = 'search-result-item p-3 hover:bg-blue-50 cursor-pointer flex items-start justify-between gap-2 transition select-none';
+      item.className = 'search-result-item p-3.5 hover:bg-blue-50 active:bg-blue-100 cursor-pointer transition select-none flex flex-col justify-center min-h-[48px]';
       item.setAttribute('role', 'option');
       item.setAttribute('tabindex', '0');
 
@@ -327,22 +328,25 @@ export class UIController {
         ? '<span class="inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200 shrink-0">OSM</span>'
         : '<span class="inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">国土地理院</span>';
 
-      // 距離表示 (計算されている場合)
-      const distanceHtml = candidate.distanceKm !== null && candidate.distanceKm !== undefined
+      // 直線距離 (計算されている場合) - BUG-009是正: 数値検証およびサニタイズ
+      const distanceHtml = (typeof candidate.distanceKm === 'number' && Number.isFinite(candidate.distanceKm))
         ? `<span class="text-[11px] text-gray-500 font-medium shrink-0 flex items-center gap-1"><i class="fa-solid fa-route text-gray-400 text-[10px]"></i>約${candidate.distanceKm}km</span>`
-        : '';
+        : (candidate.distanceKm ? `<span class="text-[11px] text-gray-500 font-medium shrink-0 flex items-center gap-1"><i class="fa-solid fa-route text-gray-400 text-[10px]"></i>約${this.escapeHtml(String(candidate.distanceKm))}km</span>` : '');
+
+      const escapedTitle = this.escapeHtml(candidate.title);
+      const escapedAddress = this.escapeHtml(candidate.address);
 
       item.innerHTML = `
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-1.5 mb-0.5">
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <div class="flex items-center gap-1.5 min-w-0">
             ${sourceBadge}
-            <span class="font-bold text-xs sm:text-sm text-gray-900 truncate">${this.escapeHtml(candidate.title)}</span>
+            <span class="font-bold text-xs sm:text-sm text-gray-900 truncate">${escapedTitle}</span>
           </div>
-          <p class="text-[11px] sm:text-xs text-gray-500 truncate" title="${this.escapeHtml(candidate.address)}">
-            <i class="fa-solid fa-location-dot mr-1 text-gray-400 text-[10px]"></i>${this.escapeHtml(candidate.address)}
-          </p>
+          ${distanceHtml}
         </div>
-        ${distanceHtml}
+        <div class="text-[11px] sm:text-xs text-gray-500 truncate" title="${escapedAddress}">
+          <i class="fa-solid fa-location-dot mr-1 text-gray-400 text-[10px] shrink-0"></i>${escapedAddress}
+        </div>
       `;
 
       // クリックイベント
@@ -368,13 +372,17 @@ export class UIController {
     });
 
     dropdown.classList.remove('hidden');
+    if (backdrop) {
+      backdrop.classList.remove('hidden');
+    }
   }
 
   /**
-   * 候補一覧ドロップダウンを非表示にし、DOMをクリアする (新規メソッド)
+   * 候補一覧ドロップダウンおよびバックドロップを非表示にし、DOMをクリアする（改訂）
    */
   static hideSearchResults() {
     const dropdown = document.getElementById('search-results-dropdown');
+    const backdrop = document.getElementById('search-backdrop');
     const searchInput = document.getElementById('search-input');
 
     if (searchInput) {
@@ -384,6 +392,10 @@ export class UIController {
     if (dropdown) {
       dropdown.classList.add('hidden');
       dropdown.innerHTML = '';
+    }
+
+    if (backdrop) {
+      backdrop.classList.add('hidden');
     }
   }
 

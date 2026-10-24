@@ -68,6 +68,14 @@ export class App {
       }
     });
 
+    // バックドロップタップ時に候補一覧を閉じる
+    const searchBackdrop = document.getElementById('search-backdrop');
+    if (searchBackdrop) {
+      searchBackdrop.addEventListener('click', () => {
+        UIController.hideSearchResults();
+      });
+    }
+
     // 現在地取得ボタン (ヘッダー)
     const btnLocation = document.getElementById('btn-current-location');
     if (btnLocation) {
@@ -200,6 +208,7 @@ export class App {
     const trimmedQuery = query.trim();
     this.isSearching = true;
     const searchRequestId = ++this.currentSearchRequestId;
+    UIController.hideSearchResults();
     UIController.setSearchLoading(true);
 
     try {
