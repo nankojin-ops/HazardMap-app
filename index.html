@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>防災ハザードマップ & 指定緊急避難場所ナビ</title>
+  <meta name="description" content="国土地理院のオープンデータを活用し、現在地や指定地点周辺の災害リスク（洪水・土砂・津波）および徒歩で到達可能な避難場所をリアルタイムに検索・表示する防災Webアプリケーション">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Leaflet CSS & JS CDN -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <!-- FontAwesome 6 Icons CDN -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+  <!-- カスタムスタイルシート -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="bg-gray-100 flex flex-col h-screen text-gray-800 select-none">
+
+  <!-- ======================================================================
+       ヘッダー (ナビゲーション・住所検索・現在地ボタン)
+       ※ ユーザーマスター関連 (user-badge 等) は完全に排除
+       ====================================================================== -->
+  <header class="h-16 bg-white border-b border-gray-200 px-4 flex items-center justify-between z-30 shadow-sm shrink-0">
+    <div class="flex items-center gap-3">
+      <!-- モバイル用サイドバートグルボタン -->
+      <button id="btn-toggle-sidebar" class="lg:hidden p-2 rounded-md hover:bg-gray-100 text-gray-600 focus:outline-none" aria-label="メニュー開閉">
+        <i class="fa-solid fa-bars text-lg"></i>
+      </button>
+
+      <!-- アプリケーションロゴ & タイトル -->
+      <div class="flex items-center gap-2.5 cursor-pointer" id="header-logo">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-sm">
+          <i class="fa-solid fa-shield-halved text-lg"></i>
+        </div>
+        <div>
+          <h1 class="font-extrabold text-base md:text-lg text-gray-900 tracking-tight leading-tight">防災ハザードマップ</h1>
+          <p class="text-[10px] text-gray-500 hidden sm:block">国土地理院オープンデータ連携ナビ</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 住所・施設名 検索バー -->
+    <div class="flex-1 max-w-md mx-3">
+      <form id="search-form" class="relative flex items-center">
+        <input
+          type="text"
+          id="search-input"
+          placeholder="住所・駅名・地名を入力して検索..."
+          class="w-full pl-9 pr-10 py-1.5 text-xs sm:text-sm bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
+          autocomplete="off"
+        />
+        <i class="fa-solid fa-magnifying-glass absolute left-3 text-gray-400 text-xs"></i>
+        <button
+          type="submit"
+          id="search-btn"
+          class="absolute right-1.5 p-1 px-2.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition shadow-sm"
+          title="検索実行"
+        >
+          検索
+        </button>
+      </form>
+    </div>
+
+    <!-- 現在地取得ボタン -->
+    <div class="flex items-center gap-2">
+      <button
+        id="btn-current-location"
+        class="flex items-center gap-1.5 px-3 py-1.5 text-xs sm:text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg font-semibold shadow-sm transition active:scale-95"
+        title="ブラウザの位置情報から現在地を取得"
+      >
+        <i class="fa-solid fa-location-crosshairs text-indigo-600"></i>
+        <span class="hidden sm:inline">現在地を取得</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ======================================================================
+       メインコンテンツ領域 (サイドバー + 地図コンテナ)
+       ====================================================================== -->
+  <div class="flex-1 flex relative overflow-hidden app-content-height">
+
+    <!-- モバイル用サイドバー背景オーバーレイ -->
+    <div id="sidebar-backdrop" class="fixed inset-0 bg-black/40 z-30 lg:hidden hidden transition-opacity"></div>
+
+    <!-- サイドバー (レイヤー切替・凡例・サンプル移動・避難所一覧) -->
+    <aside
+      id="sidebar"
+      class="fixed inset-y-0 left-0 top-16 z-40 w-80 sm:w-96 bg-white border-r border-gray-200 flex flex-col transform -translate-x-full lg:static lg:top-0 lg:translate-x-0 transition-transform duration-300 ease-in-out shadow-lg lg:shadow-none"
+    >
+      <!-- サイドバー上部: レイヤー切替 & 凡例 & サンプル -->
+      <div class="p-4 border-b border-gray-200 overflow-y-auto max-h-[48vh] shrink-0 bg-gray-50/50">
+
+        <!-- 災害リスクレイヤー選択 -->
+        <div class="mb-4">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+              <i class="fa-solid fa-layer-group text-blue-500"></i>災害リスクレイヤー
+            </h2>
+            <span class="text-[10px] text-gray-400">国土地理院タイル</span>
+          </div>
+
+          <div class="space-y-1.5">
+            <!-- 洪水レイヤー -->
+            <label class="flex items-center justify-between p-2 rounded-lg bg-white border border-gray-200 hover:border-blue-300 cursor-pointer transition shadow-2xs">
+              <div class="flex items-center gap-2">
+                <input type="checkbox" id="chk-flood" class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 border-gray-300 cursor-pointer">
+                <span class="text-xs font-semibold text-gray-800">洪水浸水想定区域</span>
+              </div>
+              <span class="text-[11px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">浸水深</span>
+            </label>
+
+            <!-- 土砂レイヤー -->
+            <label class="flex items-center justify-between p-2 rounded-lg bg-white border border-gray-200 hover:border-amber-300 cursor-pointer transition shadow-2xs">
+              <div class="flex items-center gap-2">
+                <input type="checkbox" id="chk-sediment" class="w-4 h-4 text-amber-600 rounded focus:ring-amber-500 border-gray-300 cursor-pointer">
+                <span class="text-xs font-semibold text-gray-800">土砂災害警戒区域</span>
+              </div>
+              <span class="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-medium">土石流</span>
+            </label>
+
+            <!-- 津波レイヤー -->
+            <label class="flex items-center justify-between p-2 rounded-lg bg-white border border-gray-200 hover:border-purple-300 cursor-pointer transition shadow-2xs">
+              <div class="flex items-center gap-2">
+                <input type="checkbox" id="chk-tsunami" class="w-4 h-4 text-purple-600 rounded focus:ring-purple-500 border-gray-300 cursor-pointer">
+                <span class="text-xs font-semibold text-gray-800">津波浸水想定区域</span>
+              </div>
+              <span class="text-[11px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-medium">都道府県別</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- ハザード凡例 (折りたたみアコーディオン) -->
+        <details class="mb-4 bg-white border border-gray-200 rounded-lg group text-xs">
+          <summary class="p-2.5 font-bold text-gray-700 cursor-pointer flex items-center justify-between select-none hover:bg-gray-50 rounded-lg">
+            <span class="flex items-center gap-1.5">
+              <i class="fa-solid fa-circle-question text-gray-400"></i>ハザードマップ凡例ガイド
+            </span>
+            <i class="fa-solid fa-chevron-down text-gray-400 group-open:rotate-180 transition-transform"></i>
+          </summary>
+          <div class="p-3 pt-1 border-t border-gray-100 space-y-3">
+            <div>
+              <p class="font-bold text-[11px] text-blue-900 mb-1 flex items-center gap-1">
+                <i class="fa-solid fa-water text-blue-500"></i>洪水浸水深ランク
+              </p>
+              <div class="grid grid-cols-2 gap-1 text-[10px]">
+                <div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded shrink-0" style="background:#f7f5a9;"></span>0.5m未満 (床下)</div>
+                <div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded shrink-0" style="background:#ffd8c0;"></span>0.5〜3.0m (1階)</div>
+                <div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded shrink-0" style="background:#ff9797;"></span>3.0〜5.0m (2階)</div>
+                <div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded shrink-0" style="background:#bb55bb;"></span>5.0m以上 (水没)</div>
+              </div>
+            </div>
+            <div>
+              <p class="font-bold text-[11px] text-amber-900 mb-1 flex items-center gap-1">
+                <i class="fa-solid fa-mountain text-amber-500"></i>土砂災害警戒区域
+              </p>
+              <div class="grid grid-cols-2 gap-1 text-[10px]">
+                <div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded shrink-0" style="background:#f2e600;"></span>警戒区域 (イエロー)</div>
+                <div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded shrink-0" style="background:#ea4335;"></span>特別警戒区域 (レッド)</div>
+              </div>
+            </div>
+            <div>
+              <p class="font-bold text-[11px] text-purple-900 mb-1 flex items-center gap-1">
+                <i class="fa-solid fa-house-tsunami text-purple-500"></i>避難所マーカー識別
+              </p>
+              <div class="space-y-1 text-[10px]">
+                <div class="flex items-center gap-1.5">
+                  <span class="w-3 h-3 rounded-full bg-blue-600 shrink-0"></span>
+                  <span class="font-medium text-gray-800">一般指定緊急避難場所</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span class="w-3 h-3 rounded-full bg-purple-700 ring-2 ring-purple-300 shrink-0"></span>
+                  <span class="font-medium text-purple-900">福祉・要配慮者優先避難所</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- 表示確認用サンプル地点ボタン -->
+        <div>
+          <p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+            <i class="fa-solid fa-location-dot text-indigo-500"></i>表示確認用サンプル地点
+          </p>
+          <div class="grid grid-cols-2 gap-1.5" id="sample-buttons-container">
+            <button data-sample-index="0" class="btn-sample p-2 rounded-lg text-left border border-blue-200 bg-blue-50 hover:bg-blue-100 transition">
+              <div class="font-bold text-xs text-blue-900 truncate"><i class="fa-solid fa-water mr-1 text-blue-600"></i>大阪淀川</div>
+              <div class="text-[10px] text-blue-700 truncate">洪水浸水想定</div>
+            </button>
+            <button data-sample-index="1" class="btn-sample p-2 rounded-lg text-left border border-amber-200 bg-amber-50 hover:bg-amber-100 transition">
+              <div class="font-bold text-xs text-amber-900 truncate"><i class="fa-solid fa-mountain mr-1 text-amber-600"></i>北海道札幌</div>
+              <div class="text-[10px] text-amber-700 truncate">土砂警戒区域</div>
+            </button>
+            <button data-sample-index="2" class="btn-sample p-2 rounded-lg text-left border border-amber-200 bg-amber-50 hover:bg-amber-100 transition">
+              <div class="font-bold text-xs text-amber-900 truncate"><i class="fa-solid fa-mountain mr-1 text-amber-600"></i>広島八木</div>
+              <div class="text-[10px] text-amber-700 truncate">土砂警戒区域</div>
+            </button>
+            <button data-sample-index="3" class="btn-sample p-2 rounded-lg text-left border border-purple-200 bg-purple-50 hover:bg-purple-100 transition">
+              <div class="font-bold text-xs text-purple-900 truncate"><i class="fa-solid fa-house-tsunami mr-1 text-purple-600"></i>静岡三保</div>
+              <div class="text-[10px] text-purple-700 truncate">津波浸水想定</div>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- サイドバー下部: 周辺指定緊急避難場所リスト -->
+      <div class="flex-1 flex flex-col min-h-0 bg-white">
+        <div class="p-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between shrink-0">
+          <div class="flex items-center gap-1.5">
+            <i class="fa-solid fa-person-shelter text-emerald-600"></i>
+            <h3 class="font-bold text-xs text-gray-800">周辺避難場所 (5km圏内)</h3>
+          </div>
+          <span id="shelter-count" class="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+            0件
+          </span>
+        </div>
+
+        <!-- リストスクロール領域 -->
+        <div id="shelter-list" class="flex-1 p-3 overflow-y-auto space-y-2">
+          <!-- JSから動的に避難所カードが挿入されます -->
+          <div class="p-6 text-center text-gray-400">
+            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i>
+            <p class="text-xs">データを読み込み中...</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 地図コンテナ -->
+    <main class="flex-1 relative h-full">
+      <div id="map"></div>
+    </main>
+  </div>
+
+  <!-- ======================================================================
+       全画面ローディングオーバーレイ (Sharedライブラリ思想)
+       ====================================================================== -->
+  <div id="loading-overlay" class="fixed inset-0 bg-black/50 z-50 flex flex-col items-center justify-center text-white backdrop-blur-xs hidden">
+    <div class="bg-gray-900/90 p-6 rounded-2xl flex flex-col items-center gap-4 shadow-2xl max-w-sm mx-4 text-center border border-gray-700">
+      <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+      <div>
+        <h3 class="font-bold text-base mb-1" id="loading-message">ハザード情報・避難所を検索中...</h3>
+        <p class="text-xs text-gray-300">国土地理院タイルデータを取得しています</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================================
+       トースト通知コンテナ (Sharedライブラリ思想)
+       ====================================================================== -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-3 bg-gray-900 text-white rounded-lg shadow-xl hidden max-w-md">
+    <i id="toast-icon" class="fa-solid fa-circle-info text-blue-400 text-xl shrink-0"></i>
+    <div class="text-xs sm:text-sm font-medium flex-1" id="toast-message"></div>
+    <button id="toast-close" class="text-gray-400 hover:text-white p-1 text-sm focus:outline-none" aria-label="閉じる">
+      <i class="fa-solid fa-xmark"></i>
+    </button>
+  </div>
+
+  <!-- ======================================================================
+       初回アクセス・ウェルカムモーダル
+       ====================================================================== -->
+  <div id="welcome-modal" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs hidden">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-gray-100">
+      <div class="p-6 text-center">
+        <div class="w-16 h-16 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mx-auto mb-4 text-2xl shadow-inner">
+          <i class="fa-solid fa-location-dot"></i>
+        </div>
+        <h2 class="text-xl font-extrabold text-gray-900 mb-2">位置情報の利用について</h2>
+        <p class="text-xs sm:text-sm text-gray-600 mb-6 leading-relaxed">
+          現在地周辺の災害リスク（洪水・土砂・津波）および、徒歩ですぐに避難できる緊急避難場所を自動検索して表示します。<br>
+          ブラウザの位置情報取得を許可して開始しますか？
+        </p>
+        <div class="space-y-2.5">
+          <button
+            id="btn-modal-location"
+            class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-md hover:shadow-lg transition flex items-center justify-center gap-2"
+          >
+            <i class="fa-solid fa-location-crosshairs"></i>現在地を取得して開始
+          </button>
+          <button
+            id="btn-modal-default"
+            class="w-full py-2.5 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium text-xs sm:text-sm transition"
+          >
+            現在地を取得せずに開始 (新大阪駅周辺)
+          </button>
+        </div>
+      </div>
+      <div class="bg-gray-50 px-6 py-3 border-t border-gray-100 text-[11px] text-gray-400 text-center">
+        ※ 取得した位置情報はブラウザ内でのみ利用され、サーバーへ送信されることはありません。
+      </div>
+    </div>
+  </div>
+
+  <!-- アプリケーション メインスクリプト (ES Module) -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

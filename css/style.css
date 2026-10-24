@@ -1,0 +1,77 @@
+/* ==========================================================================
+   防災ハザードマップ & 避難場所ナビゲーション カスタムスタイルシート
+   ========================================================================== */
+
+/* 全体ベース設定 */
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+}
+
+/* メインレイアウトの高さ計算 (ヘッダー: 64px = 4rem) */
+.app-content-height {
+  height: calc(100vh - 4rem);
+}
+
+/* 地図コンテナ */
+#map {
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  background-color: #e5e7eb;
+}
+
+/* カスタムスクロールバー */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* 避難所カードのアクティブ・ホバーエフェクト */
+.shelter-card {
+  transition: all 0.2s ease-in-out;
+}
+.shelter-card:hover {
+  transform: translateY(-1px);
+}
+
+/* Leaflet ポップアップスタイルの調整 */
+.leaflet-popup-content-wrapper {
+  padding: 8px 12px;
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+}
+.leaflet-popup-content {
+  margin: 6px 4px;
+  line-height: 1.4;
+}
+
+/* パルスピンのスタイル */
+.pulse-marker-wrapper {
+  background: transparent;
+  border: none;
+}
+
+/* 避難所マーカー */
+.shelter-marker-general, .shelter-marker-welfare {
+  background: transparent;
+  border: none;
+}
+
+/* トーストのアニメーション */
+#toast-container {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
