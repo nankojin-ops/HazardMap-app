@@ -1,6 +1,9 @@
 # 実装計画・タスク仕様書: 防災ハザードマップ & 避難場所表示 静的HTMLアプリケーション
+## （第2版: ジオコーディング高精度化 & 候補選択UI拡張）
 
-本書は、システムアーキテクチャ設計書（`docs/architecture.md`）に基づき、シニアコーダーが迷わず実装に着手できるように、技術的レビュー、詳細インターフェース仕様、テスト戦略、および段階的な実装タスク仕様を定義した技術計画書である。
+本書は、システムアーキテクチャ設計書（`docs/architecture.md`）の改訂内容（ADR-05, ADR-06, 受け入れ基準 AC-9）に基づき、シニアコーダーが迷わず実装に着手できるよう、技術的レビュー所見、詳細インターフェース仕様、テスト戦略、および段階的な実装タスク仕様を定義した技術計画書である。
+
+初版（TASK-001〜TASK-008）にて稼働中の完全静的SPA基盤を維持・保護しつつ、「検索ボタン押下時に意図しない遠隔地（例: 新宿駅で山形県朝日町新宿）へ誤ジャンプする問題」を抜本解決するための具体的な実装タスク（TASK-009〜TASK-015）を定義する。
 
 ---
 
@@ -9,489 +12,262 @@
 ### 1.1 実現可能性評価 (Feasibility Assessment)
 - **総合判定**: **【極めて高い（Go）】**
 - **理由**:
-  1. 国土地理院のタイル配信サーバー（標準地図・ハザードラスター・避難所GeoJSON）およびAPI（`msearch`, `mreversegeocoder`）は、ブラウザからのCORS（`Access-Control-Allow-Origin: *`）アクセスを公式に許可している。
-  2. Google Apps Script（GAS）サーバーに依存していた処理（ユーザーマスタ検索、サーバー側ジオコーディング）をクライアント完結型に移行する設計に無理がなく、セキュリティリスク（APIキー露出、スプレッドシート権限漏洩）が完全に解消される。
-  3. 避難所データの取得・距離計算・ソート・UIレンダリングのパイプラインはクライアント側の計算資源で十分高速（実測数百ミリ秒〜1秒程度）に動作可能。
+  1. **外部APIのCORS適合性とキーフリー運用**:
+     - 国土地理院住所検索API（`msearch.gsi.go.jp`）に加え、補完採用する OpenStreetMap (OSM) Nominatim API（`https://nominatim.openstreetmap.org/search`）もブラウザからの直接 CORS GET リクエスト（`Access-Control-Allow-Origin: *`）を公式に許可している。
+     - 有料APIや個人APIキーを一切必要とせず、完全静的・クライアント完結の基本原則（ADR-01, ADR-02, NFR-1, NFR-2）を完全に遵守可能である。
+  2. **スマートリランキングの計算量**:
+     - 検索候補数は国土地理院API（最大10件）とOSM Nominatim API（最大5件）を合わせて最大15件程度である。
+     - 文字列一致度、階層スコア、距離ペナルティのスコア算出・ソート処理は $O(N \log N)$（$N \le 15$）であり、クライアントサイドのJavaScript実行環境において数ミリ秒未満で即時完了する。
+  3. **UI/UXコンポーネントの軽量性**:
+     - 検索バー直下に展開する候補リストドロップダウンは、既存の Tailwind CSS と Vanilla DOM API のみで完全に制御可能であり、外部UIライブラリの追加なしで高い応答性を実現できる。
 
 ### 1.2 留意事項・技術リスク (Technical Risks & Mitigations)
-1. **ES Modules とローカルファイル実行 (`file://` 制約)**:
-   - **リスク**: ES Modules（`<script type="module">`）は、ブラウザセキュリティにより `file://` プロトコル（直接ダブルクリック）で読み込むと CORS エラーで停止する。
-   - **対策**: ローカル検証環境では Node.js の軽量HTTPサーバー（`npx serve` や `http-server`）または Python（`python -m http.server 8000`）を利用することを標準運用とする。また、ブラウザの Geolocation API 自体も `https://` または `http://localhost` のセキュアコンテキストでのみ動作するため、ローカルWebサーバー起動を必須要件として位置付ける。
-2. **54タイル非同期並行フェッチとネットワーク耐障害性**:
-   - **リスク**: 周辺9タイル×6種別（計54URL）への一斉fetchにより、一部タイルのタイムアウトや国土地理院サーバーの404応答（データ未配備）が発生する。
-   - **対策**: `Promise.allSettled()` による並行処理を採用し、HTTP 404 は「該当なし」の正常系として空配列を返却する。ネットワーク切断やリクエスト失敗時も例外をスローせず警告ログにとどめ、取得できたデータのみで避難所計算を継続する。また、同一タイルの重複リクエストを防止するインメモリキャッシュ（`Map<string, Feature[]>`）を実装する。
-3. **都道府県コードの動的更新とタイルの整合性**:
-   - **リスク**: 日本海沿岸や県境付近において、逆ジオコーダの判定が遅延または取得失敗した場合、土砂・津波レイヤーが不正な都道府県コードを参照してタイル読み込みエラーになる可能性がある。
-   - **対策**: 逆ジオコーダ取得失敗時はデフォルトコード（`27`: 大阪府）または直前の都道府県コードに安全にフォールバックし、地図全体の表示が停止しないように設計する。
+1. **OSM Nominatim API 利用規約（Fair Use Policy）の厳格遵守**:
+   - **リスク**: Nominatim API には「最大 1 リクエスト/秒（1 req/sec）」という厳格な利用規約がある。リアルタイムなインクリメンタルサジェスト（キー入力ごとの通信）を行うと、IP一時遮断（HTTP 429 / 403）を招くリスクがある。
+   - **対策**: インクリメンタルサジェストは一切導入せず、ユーザーが明示的に「検索ボタンを押下」または「Enterキーを押下」したタイミングでのみリクエストを発行する。また、連続連打を防止するため、検索実行中は検索ボタンを即時 `disabled` 化しスピナーを表示する。
+2. **座標・プロパティ構造の差異（GSI vs OSM）の吸収**:
+   - **リスク**: 国土地理院APIは GeoJSON 形式で `coordinates: [経度, 緯度]`（数値配列）だが、OSM Nominatim API は JSON 形式で `lat`, `lon` が文字列（`"lat": "35.690921"`, `"lon": "139.700258"`）で返却される。
+   - **対策**: 各APIアダプタでレスポンスを共通インターフェース `GeocodingCandidate` に正規化・変換する際、`parseFloat()` による確実な数値化と NaN ガードを実施し、緯度・経度の逆転バグを防止する。
+3. **API部分障害時の耐障害性（片肺運転の保証）**:
+   - **リスク**: ネットワーク不安定や外部サーバー障害により、国土地理院またはOSMのどちらか一方がタイムアウト・500エラーになる可能性がある。
+   - **対策**: `Promise.allSettled()` による並行非同期取得を採用し、一方のAPIが失敗しても他方の取得結果のみで候補リストを生成して処理を継続する。両方とも失敗した場合のみ通信エラーの案内を表示し、地図の現在位置を維持する。
+4. **XSS（クロスサイトスクリプティング）の完全防止**:
+   - **リスク**: 外部APIから取得した地名や詳細住所文字列に悪意あるHTMLタグやスクリプトが混入している場合、DOM描画時にXSS脆弱性となる恐れがある。
+   - **対策**: ドロップダウンへの候補テキスト挿入時は、`UIController.escapeHtml()` を適用するか、DOM要素の `textContent` プロパティを使用してレンダリングし、HTMLインジェクションを根本遮断する。
 
 ### 1.3 アーキテクトへのエスカレーション有無
 - **エスカレーション**: **【なし（仕様合意済み）】**
-  - システムアーキテクチャ設計書に重大な欠陥や不整合はなく、本計画書にてインターフェースおよびデータ構造の粒度を補完することで、完全な実装への移行が可能である。
+  - システムアーキテクチャ設計書の改訂方針（ADR-05, ADR-06, 受け入れ基準 AC-9）に矛盾や未定義事項はなく、本計画書にて具体的なタスクとインターフェース仕様を確定することで、シニアコーダーが安全かつ確実に実装可能である。
 
 ---
 
 ## 2. 影響範囲・変更対象ファイル一覧
 
-### 2.1 変更・新規作成ファイル/モジュール一覧
+### 2.1 変更対象ファイル一覧
 
 ```text
 HazardMap-app/
-├── index.html                  # [新規作成] アプリケーション骨格DOM・UI
-├── css/
-│   └── style.css               # [新規作成] カスタムレイアウト・ピンアニメーション
 ├── js/
-│   ├── config.js               # [新規作成] システム定数・URL・ハザード定義
-│   ├── geocoding-service.js    # [新規作成] 住所検索・逆ジオコーダ連携
-│   ├── map-service.js          # [新規作成] Leaflet地図・レイヤー・ピン操作
-│   ├── shelter-service.js      # [新規作成] タイル計算・GeoJSON取得・距離計算
-│   ├── ui-controller.js        # [新規作成] DOM更新・トースト・ローディング制御
-│   └── app.js                  # [新規作成] エントリポイント・イベント調停
-├── tests/
-│   ├── config.test.js          # [新規作成] 設定・定数の健全性テスト
-│   ├── geocoding.test.js       # [新規作成] ジオコーディング単体テスト
-│   └── shelter.test.js         # [新規作成] タイル計算・距離/徒歩時間計算テスト
-└── docs/
-    ├── architecture.md         # [既存・参照] システムアーキテクチャ設計書
-    └── implementation-plan.md  # [新規作成・本書] 実装計画・タスク仕様書
+│   ├── config.js               # [変更] OSMエンドポイント、検索リランキング係数、候補件数定数の追加
+│   ├── geocoding-service.js    # [変更] search()新設、ハイブリッド取得、リランキング、geocode()互換維持
+│   ├── ui-controller.js        # [変更] 候補ドロップダウン描画、開閉制御、検索スピナー制御の追加
+│   └── app.js                  # [変更] 検索イベント調停、確度別分岐、ドロップダウン連携、ESC/外側クリック制御
+├── index.html                  # [変更] 検索バー直下への候補ドロップダウンコンテナ、スピナーDOMの配置
+├── css/style.css               # [変更] 検索候補ドロップダウンのフローティング・スクロール・ホバースタイル追加
+└── tests/
+    └── geocoding.test.js       # [変更] search()単体テスト、スマートリランキング、高確度判定、互換性テスト追加
 ```
 
 ### 2.2 依存関係・後方互換性への考慮事項
-- **外部ライブラリ依存**:
-  - Leaflet.js v1.9.4（CDN経由）
-  - Tailwind CSS v3.x（CDN経由）
-  - FontAwesome v6.4.0（CDN経由）
-- **削除対象コード（後方互換性の排除）**:
-  - 旧GASコード（`UserService.gs`, `AdminService.gs`, `Main.gs`, `GeoService.gs`）およびスプレッドシート接続処理、スクリプトプロパティへの依存を完全撤廃。
-  - ヘッダーのユーザー情報バッジ（`#user-badge`）を削除。
+- **`GeocodingService.geocode(address)` の後方互換性の維持**:
+  - 既存のテストコード（`tests/geocoding.test.js`）や他モジュールからの呼び出しを壊さないため、`geocode(address)` メソッドのシグネチャおよび戻り値型（`Promise<{ lat, lng, title, prefCode } | null>`）を完全に維持する。
+  - 内部実装としては、新設する `search(address)` を呼び出し、スコア最上位の候補1件を既存形式に適合させて返却するラッパーとして機能させる。
+- **他サービスモジュールへの影響の局所化**:
+  - `MapService`（地図・レイヤー・ピン描画）および `ShelterService`（GeoJSONタイル取得・避難所計算）のインターフェース変更は一切行わない。
+  - 検索結果が単一自動選択された場合も、ユーザーがドロップダウンから選択した場合も、最終的には既存の `App.updateLocation(lat, lng, label, zoom, prefCode)` に座標を引き渡すため、避難所計算やハザードレイヤーの連動ロジックに影響を与えない。
 
 ---
 
 ## 3. インターフェース・データ構造仕様
 
-### 3.1 共通データ構造 (Data Structures)
+### 3.1 データ構造仕様
 
-#### (1) 避難所データモデル (`ShelterData`)
+#### (1) ジオコーディング候補オブジェクト (`GeocodingCandidate`)
 ```typescript
-interface ShelterData {
-  name: string;             // 避難所・施設名称 (例: "新大阪小学校")
-  address: string;          // 所在地住所 (例: "大阪府大阪市淀川区...")
-  lat: number;              // 緯度 (10進数)
-  lng: number;              // 経度 (10進数)
-  directDistance: number;   // 直線距離 (km, 小数第2位)
-  walkingDistance: number;  // 推定徒歩距離 (km, 小数第2位: 直線×1.25)
-  walkingMinutes: number;   // 推定徒歩所要時間 (分: 80m/分、切り上げ)
-  category: string;         // 表示用対応災害文字列 (例: "洪水・地震 対応")
-  categories: string[];     // 対応災害種別配列 (例: ["洪水", "地震"])
-  isWelfare: boolean;       // 福祉避難所フラグ
-  targetNote: string;       // 対象者補足 ("要介護者・要配慮者優先（福祉避難所等）" | "一般避難者対象")
+interface GeocodingCandidate {
+  id: string;               // 一意な識別子 (例: "gsi_0", "osm_node_123456")
+  title: string;            // 主要名称 (例: "新宿駅", "東京都新宿区")
+  address: string;          // 詳細住所または構成地名 (例: "東京都新宿区新宿三丁目", "山形県西村山郡朝日町新宿")
+  lat: number;              // 緯度 (数値)
+  lng: number;              // 経度 (数値)
+  prefCode: string;         // JIS都道府県コード2桁 (例: "13")
+  source: 'gsi' | 'osm';    // 提供元API ('gsi': 国土地理院, 'osm': OpenStreetMap)
+  distanceKm: number | null;// 現在地図中心からの直線距離 (km, 小数第1位)。中心未指定時は null
+  score: number;            // 総合スコアリング値
+  isHighConfidence: boolean;// 高確度フラグ (完全一致かつスコア閾値以上)
 }
 ```
 
-#### (2) ジオコーディング結果モデル (`GeocodingResult`)
+#### (2) ジオコーディング検索オプション (`GeocodingOptions`)
 ```typescript
-interface GeocodingResult {
-  lat: number;              // 緯度
-  lng: number;              // 経度
-  title: string;            // 検索ヒット地名・住所
-  prefCode: string;         // JIS都道府県コード2桁 (例: "27")
+interface GeocodingOptions {
+  centerLat?: number;       // 距離バイアス計算用中心緯度 (現在の地図中心または現在地)
+  centerLng?: number;       // 距離バイアス計算用中心経度
+  maxResults?: number;      // 最大返却件数 (デフォルト: APP_CONFIG.MAX_SEARCH_CANDIDATES = 5)
+  enableFallback?: boolean; // OSM Nominatim 補完の有効/無効 (デフォルト: true)
 }
 ```
 
-#### (3) アプリケーション設定モデル (`AppConfig`)
-```typescript
-interface AppConfig {
-  WALKING_SPEED_MPM: number;        // 徒歩分速 (80)
-  CIRCUITY_FACTOR: number;          // 迂回係数 (1.25)
-  DEFAULT_LAT: number;              // 初期緯度 (34.72631588753036)
-  DEFAULT_LNG: number;              // 初期経度 (135.49736241752382)
-  DEFAULT_ZOOM: number;             // 初期ズーム (14)
-  DEFAULT_PREF_CODE: string;        // 初期都道府県コード ("27")
-  MAX_SEARCH_RADIUS_KM: number;     // 検索半径上限 (5)
-  MAX_SHELTER_DISPLAY_COUNT: number;// 最大表示件数 (50)
-  TILE_URLS: {
-    std: string;
-    flood: string;
-    sediment: string;
-    tsunami: string;
-    shelterGeoJson: string;
-  };
-  API_ENDPOINTS: {
-    reverseGeocode: string;
-    addressSearch: string;
-  };
-  HAZARD_CATEGORIES: Array<{ type: string; code: string }>;
-  PREFECTURE_CODE_MAP: Record<string, string>;
-  WELFARE_KEYWORDS: string[];
-  SAMPLE_LOCATIONS: Array<{
-    name: string;
-    lat: number;
-    lng: number;
-    activeHazard: 'flood' | 'sediment' | 'tsunami';
-    prefCode: string;
-    icon: string;
-    bgClass: string;
-    borderClass: string;
-    textClass: string;
-  }>;
-}
+#### (3) アプリケーション設定への追加項目 (`APP_CONFIG` 拡張)
+```javascript
+// js/config.js の APP_CONFIG に以下を追加
+API_ENDPOINTS: Object.freeze({
+  reverseGeocode: 'https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress',
+  addressSearch: 'https://msearch.gsi.go.jp/address-search/AddressSearch',
+  osmSearch: 'https://nominatim.openstreetmap.org/search' // [新規追加]
+}),
+
+/** 検索・リランキング関連設定 */
+SEARCH_CONFIG: Object.freeze({
+  MAX_CANDIDATES: 5,               // ドロップダウン最大表示候補数
+  HIGH_CONFIDENCE_THRESHOLD: 85,   // 単一候補時に自動ジャンプを許可する最低スコア
+  WEIGHTS: Object.freeze({
+    MATCH: 1.0,                    // 文字列マッチ度重み
+    HIERARCHY: 1.0,                // 行政階層・主要度重み
+    IMPORTANCE: 1.0,               // 知名度重み
+    DISTANCE_PENALTY_MAX: 15       // 距離ペナルティ最大減点幅
+  })
+}),
 ```
 
 ---
 
 ### 3.2 モジュール別クラス・関数シグネチャ仕様
 
-#### (1) `js/config.js`
-```javascript
-export const APP_CONFIG = Object.freeze({
-  WALKING_SPEED_MPM: 80,
-  CIRCUITY_FACTOR: 1.25,
-  DEFAULT_LAT: 34.72631588753036,
-  DEFAULT_LNG: 135.49736241752382,
-  DEFAULT_ZOOM: 14,
-  DEFAULT_PREF_CODE: '27',
-  MAX_SEARCH_RADIUS_KM: 5,
-  MAX_SHELTER_DISPLAY_COUNT: 50,
-  TILE_URLS: {
-    std: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
-    flood: 'https://disaportaldata.gsi.go.jp/raster/01_flood_l2_shinsuishin_data/{z}/{x}/{y}.png',
-    sediment: 'https://disaportaldata.gsi.go.jp/raster/05_dosekiryukeikaikuiki_data/{pref}/{z}/{x}/{y}.png',
-    tsunami: 'https://disaportaldata.gsi.go.jp/raster/04_tsunami_newlegend_pref_data/{pref}/{z}/{x}/{y}.png',
-    shelterGeoJson: 'https://cyberjapandata.gsi.go.jp/xyz/{code}/10/{x}/{y}.geojson'
-  },
-  API_ENDPOINTS: {
-    reverseGeocode: 'https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress',
-    addressSearch: 'https://msearch.gsi.go.jp/address-search/AddressSearch'
-  },
-  HAZARD_CATEGORIES: [
-    { type: '洪水', code: 'skhb01' },
-    { type: '土砂', code: 'skhb02' },
-    { type: '高潮', code: 'skhb03' },
-    { type: '地震', code: 'skhb04' },
-    { type: '津波', code: 'skhb05' },
-    { type: '火事', code: 'skhb06' }
-  ],
-  PREFECTURE_CODE_MAP: {
-    '北海道': '01', '青森県': '02', '岩手県': '03', '宮城県': '04', '秋田県': '05',
-    '山形県': '06', '福島県': '07', '茨城県': '08', '栃木県': '09', '群馬県': '10',
-    '埼玉県': '11', '千葉県': '12', '東京都': '13', '神奈川県': '14', '新潟県': '15',
-    '富山県': '16', '石川県': '17', '福井県': '18', '山梨県': '19', '長野県': '20',
-    '岐阜県': '21', '静岡県': '22', '愛知県': '23', '三重県': '24', '滋賀県': '25',
-    '京都府': '26', '大阪府': '27', '兵庫県': '28', '奈良県': '29', '和歌山県': '30',
-    '鳥取県': '31', '島根県': '32', '岡山県': '33', '広島県': '34', '山口県': '35',
-    '徳島県': '36', '香川県': '37', '愛媛県': '38', '高知県': '39', '福岡県': '40',
-    '佐賀県': '41', '長崎県': '42', '熊本県': '43', '大分県': '44', '宮崎県': '45',
-    '鹿児島県': '46', '沖縄県': '47'
-  },
-  WELFARE_KEYWORDS: [
-    '福祉', '介護', '特別養護', '養護', 'デイサービス', 'ケアセンター',
-    '障害', '障がい', '老健', 'グループホーム', '養護老人ホーム', '支援学校'
-  ],
-  SAMPLE_LOCATIONS: [
-    {
-      name: '大阪淀川 (洪水)',
-      lat: 34.7130,
-      lng: 135.4880,
-      activeHazard: 'flood',
-      prefCode: '27',
-      icon: 'fa-water',
-      bgClass: 'bg-blue-50 hover:bg-blue-100',
-      borderClass: 'border-blue-300',
-      textClass: 'text-blue-800'
-    },
-    {
-      name: '北海道札幌 (土砂)',
-      lat: 43.1180,
-      lng: 141.2250,
-      activeHazard: 'sediment',
-      prefCode: '01',
-      icon: 'fa-mountain',
-      bgClass: 'bg-amber-50 hover:bg-amber-100',
-      borderClass: 'border-amber-300',
-      textClass: 'text-amber-800'
-    },
-    {
-      name: '広島八木 (土砂)',
-      lat: 34.4600,
-      lng: 132.4830,
-      activeHazard: 'sediment',
-      prefCode: '34',
-      icon: 'fa-mountain',
-      bgClass: 'bg-amber-50 hover:bg-amber-100',
-      borderClass: 'border-amber-300',
-      textClass: 'text-amber-800'
-    },
-    {
-      name: '静岡三保 (津波)',
-      lat: 34.9960,
-      lng: 138.5220,
-      activeHazard: 'tsunami',
-      prefCode: '22',
-      icon: 'fa-house-tsunami',
-      bgClass: 'bg-purple-50 hover:bg-purple-100',
-      borderClass: 'border-purple-300',
-      textClass: 'text-purple-800'
-    }
-  ]
-});
-```
-
-#### (2) `js/geocoding-service.js`
+#### (1) `js/geocoding-service.js`
 ```javascript
 export class GeocodingService {
   /**
-   * 住所・ランドマーク名から座標および都道府県コードを取得する
-   * @param {string} address - 検索クエリ文字列
-   * @returns {Promise<GeocodingResult | null>} 検索結果オブジェクト、未検出時は null
+   * クエリ文字列からスコアリング・ソート済みの候補リストを取得する (新規メソッド)
+   * @param {string} query - 検索文字列
+   * @param {GeocodingOptions} [options={}] - 検索オプション
+   * @returns {Promise<GeocodingCandidate[]>} ソート済み候補リスト (0件時は空配列)
    */
-  static async geocode(address);
+  static async search(query, options = {}) {}
 
   /**
-   * 緯度経度からJIS都道府県コード(2桁)を取得する（逆ジオコーディング）
-   * @param {number} lat - 緯度
-   * @param {number} lng - 経度
-   * @returns {Promise<string>} JIS都道府県コード（例: "27"）。取得失敗時は DEFAULT_PREF_CODE
+   * 後方互換メソッド: 最上位候補1件を返却する
+   * @param {string} address - 検索クエリ
+   * @returns {Promise<{ lat: number, lng: number, title: string, prefCode: string } | null>}
    */
-  static async reverseGeocodePrefCode(lat, lng);
+  static async geocode(address) {}
 
   /**
-   * 全国地方公共団体コード(muniCd)からJIS都道府県コード(2桁)を抽出する
-   * @param {string|number} muniCd - 5桁の市区町村コード (例: "27100")
-   * @returns {string} 2桁コード (例: "27")
+   * 候補単体の総合スコアを算出する
+   * @param {Object} rawCandidate - 正規化前候補情報
+   * @param {string} normalizedQuery - 正規化済み検索クエリ
+   * @param {number|null} centerLat - 中心緯度
+   * @param {number|null} centerLng - 中心経度
+   * @returns {{ score: number, distanceKm: number|null, isHighConfidence: boolean }}
    */
-  static extractPrefCodeFromMuniCd(muniCd);
+  static calculateCandidateScore(rawCandidate, normalizedQuery, centerLat, centerLng) {}
+
+  /**
+   * クエリ文字列の正規化（全角英数・記号の半角化、余分な空白のトリム）
+   * @param {string} text
+   * @returns {string}
+   */
+  static normalizeQuery(text) {}
+
+  /**
+   * 既存メソッド: 緯度経度からJIS都道府県コード(2桁)を取得する
+   * @param {number} lat
+   * @param {number} lng
+   * @returns {Promise<string>}
+   */
+  static async reverseGeocodePrefCode(lat, lng) {}
+
+  /**
+   * 既存メソッド: 自治体コードから都道府県コード(2桁)を抽出する
+   * @param {string|number} muniCd
+   * @returns {string}
+   */
+  static extractPrefCodeFromMuniCd(muniCd) {}
+
+  /**
+   * 既存メソッド: テキスト内から都道府県名を検出する
+   * @param {string} text
+   * @returns {string | null}
+   */
+  static findPrefCodeFromText(text) {}
 }
 ```
 
-#### (3) `js/shelter-service.js`
-```javascript
-export class ShelterService {
-  /**
-   * 指定座標の周辺指定緊急避難場所を取得・計算・ソートして返却する
-   * @param {number} userLat - 中心緯度
-   * @param {number} userLng - 中心経度
-   * @param {number} [maxRadiusKm=5] - 検索半径上限(km)
-   * @returns {Promise<ShelterData[]>} 徒歩所要時間昇順の避難所データリスト (最大50件)
-   */
-  static async getNearbyShelters(userLat, userLng, maxRadiusKm = APP_CONFIG.MAX_SEARCH_RADIUS_KM);
-
-  /**
-   * 緯度経度とズームレベルから国土地理院タイル座標 (X, Y) を算出する
-   * @param {number} lat - 緯度
-   * @param {number} lng - 経度
-   * @param {number} zoom - ズームレベル (避難所タイルは固定で 10)
-   * @returns {{ x: number, y: number, z: number }}
-   */
-  static getTileCoordinate(lat, lng, zoom);
-
-  /**
-   * 2地点間の大円距離 (Haversine式) を計算する
-   * @param {number} lat1 - 地点1緯度
-   * @param {number} lon1 - 地点1経度
-   * @param {number} lat2 - 地点2緯度
-   * @param {number} lon2 - 地点2経度
-   * @returns {number} 直線距離 (km)
-   */
-  static calculateDistanceKm(lat1, lon1, lat2, lon2);
-
-  /**
-   * GeoJSON Featureのgeometryから緯度・経度を安全にパースする
-   * @param {Object} geometry - GeoJSON geometry オブジェクト
-   * @returns {{ lat: number, lng: number } | null}
-   */
-  static parseFeatureCoordinates(geometry);
-
-  /**
-   * 避難所フィーチャが福祉避難所・要配慮者向けであるかを判定する
-   * @param {Object} props - Feature properties
-   * @param {string} name - 避難所名称
-   * @returns {boolean} 福祉避難所の場合 true
-   */
-  static checkIsWelfare(props, name);
-
-  /**
-   * 単一のタイルGeoJSONを非同期取得する（キャッシュ対応・404許容）
-   * @param {string} url - タイルURL
-   * @returns {Promise<Array<Object>>} フィーチャ配列（存在しない場合は空配列）
-   */
-  static async fetchTileFeatures(url);
-
-  /**
-   * インメモリキャッシュを全クリアする
-   */
-  static clearCache();
-}
-```
-
-#### (4) `js/map-service.js`
-```javascript
-export class MapService {
-  /**
-   * Leaflet地図インスタンスを初期化する
-   * @param {string} containerId - 地図表示要素のDOM ID ('map')
-   * @param {[number, number]} initialCoords - 初期表示座標 [緯度, 経度]
-   * @param {number} initialZoom - 初期ズームレベル (14)
-   */
-  static initMap(containerId, initialCoords, initialZoom);
-
-  /**
-   * 都道府県コードに応じてハザードレイヤー（土砂・津波）を再構築する
-   * @param {string} prefCode - JIS都道府県コード2桁
-   */
-  static updateHazardLayers(prefCode);
-
-  /**
-   * ハザードレイヤーの表示/非表示を切り替える
-   * @param {'flood' | 'sediment' | 'tsunami'} type - レイヤー種別
-   * @param {boolean} visible - 表示フラグ
-   */
-  static toggleHazardLayer(type, visible);
-
-  /**
-   * 中心地点マーカー（赤色パルスピン）を配置・移動し、地図をパンする
-   * @param {number} lat - 緯度
-   * @param {number} lng - 経度
-   * @param {string} popupText - ポップアップテキスト
-   * @param {number} [zoom=14] - ズームレベル
-   */
-  static setLocationMarker(lat, lng, popupText, zoom = 14);
-
-  /**
-   * 避難所マーカー群を描画する
-   * @param {ShelterData[]} shelters - 避難所データリスト
-   * @param {(shelter: ShelterData) => void} [onMarkerClick] - マーカークリック時コールバック
-   */
-  static renderShelterMarkers(shelters, onMarkerClick);
-
-  /**
-   * 特定の避難所に地図をフォーカスし、ポップアップを展開する
-   * @param {ShelterData} shelter - フォーカス対象避難所
-   * @param {number} [zoom=16] - ズームレベル
-   */
-  static focusShelter(shelter, zoom = 16);
-
-  /**
-   * 福祉避難所 / 一般避難所用のカスタム DivIcon を生成する
-   * @param {boolean} isWelfare - 福祉避難所フラグ
-   * @returns {L.DivIcon}
-   */
-  static createShelterMarkerIcon(isWelfare);
-
-  /**
-   * レンダリング済みのLeafletマップインスタンスを取得する
-   * @returns {L.Map | null}
-   */
-  static getMapInstance();
-}
-```
-
-#### (5) `js/ui-controller.js`
+#### (2) `js/ui-controller.js`
 ```javascript
 export class UIController {
   /**
-   * 全画面ローディングオーバーレイを表示する (Sharedライブラリ思想)
-   * @param {string} [message='処理中...'] - 表示メッセージ
+   * 検索バー直下に候補一覧ドロップダウンを表示する (新規メソッド)
+   * @param {GeocodingCandidate[]} candidates - 表示候補一覧
+   * @param {(candidate: GeocodingCandidate) => void} onSelect - 選択時コールバック
    */
-  static showLoading(message = '処理中...');
+  static showSearchResults(candidates, onSelect) {}
 
   /**
-   * 全画面ローディングオーバーレイを非表示にする
+   * 候補一覧ドロップダウンを非表示にし、DOMをクリアする (新規メソッド)
    */
-  static hideLoading();
+  static hideSearchResults() {}
 
   /**
-   * トースト通知を表示する (Sharedライブラリ思想)
-   * @param {string} message - 通知メッセージ
-   * @param {boolean} [isError=false] - エラー表示フラグ
-   * @param {number} [autoHideMs=5000] - 自動非表示ミリ秒 (0で非自動非表示)
+   * 検索ボタン・入力欄のローディング状態（スピナー表示・ボタン無効化）を切り替える (新規メソッド)
+   * @param {boolean} isLoading
    */
-  static showToast(message, isError = false, autoHideMs = 5000);
+  static setSearchLoading(isLoading) {}
 
-  /**
-   * トースト通知を即時閉じる
-   */
-  static dismissToast();
-
-  /**
-   * 初回ウェルカムモーダルを表示する
-   */
-  static showWelcomeModal();
-
-  /**
-   * 初回ウェルカムモーダルを非表示にする
-   */
-  static hideWelcomeModal();
-
-  /**
-   * サイドバーを開閉トグルする（モバイル用）
-   */
-  static toggleSidebar();
-
-  /**
-   * サイドバーを強制的に閉じる（モバイル用）
-   */
-  static closeSidebar();
-
-  /**
-   * 周辺避難所リストカード群を描画する
-   * @param {ShelterData[]} shelters - 避難所データリスト
-   * @param {(shelter: ShelterData) => void} onCardClick - カードクリック時コールバック
-   */
-  static renderShelterList(shelters, onCardClick);
-
-  /**
-   * ハザードチェックボックスのON/OFF状態をUIに反映する
-   * @param {'flood' | 'sediment' | 'tsunami'} type - レイヤー種別
-   * @param {boolean} checked - チェック状態
-   */
-  static setHazardCheckbox(type, checked);
+  // ※ 既存の showLoading, hideLoading, showToast, renderShelterList, escapeHtml 等はすべて維持
 }
 ```
 
-#### (6) `js/app.js`
+#### (3) `js/app.js`
 ```javascript
 export class App {
   /**
-   * アプリケーション初期化エントリポイント
+   * 住所・キーワード検索のオーケストレーション（改修）
+   * 1. UIController.setSearchLoading(true)
+   * 2. GeocodingService.search(query, { centerLat, centerLng })
+   * 3. 確度判定:
+   *    - candidates.length === 1 かつ isHighConfidence: 自動移動
+   *    - candidates.length >= 1: UIController.showSearchResults(candidates, callback)
+   *    - candidates.length === 0: トーストで0件案内と入力ヒント提示
+   * 4. UIController.setSearchLoading(false)
+   * @param {string} query
    */
-  static async init();
-
-  /**
-   * イベントリスナーの登録（検索、現在地、レイヤー、サンプル地点、モーダル）
-   */
-  static setupEventListeners();
-
-  /**
-   * URLパラメータ（?address=... または ?lat=...&lng=...）の解析と初期位置決定
-   */
-  static async handleInitialLocation();
-
-  /**
-   * 住所検索の実行フロー
-   * @param {string} query - 住所または施設名
-   */
-  static async searchAddress(query);
-
-  /**
-   * 現在地取得の実行フロー
-   * @param {boolean} isUserInitiated - ユーザーの明示的操作かどうか
-   */
-  static async getCurrentLocation(isUserInitiated = true);
-
-  /**
-   * サンプル地点へのジャンプ実行フロー
-   * @param {number} index - SAMPLE_LOCATIONS のインデックス
-   */
-  static async moveToSample(index);
-
-  /**
-   * 座標の決定に伴う総合更新フロー（逆ジオコーダ -> ハザードレイヤー -> 避難所計算 -> マーカー・リスト描画）
-   * @param {number} lat - 緯度
-   * @param {number} lng - 経度
-   * @param {string} label - 表示ラベル
-   * @param {number} [zoom=14] - ズームレベル
-   */
-  static async updateLocation(lat, lng, label, zoom = 14);
+  static async searchAddress(query) {}
 }
+```
+
+---
+
+### 3.3 DOM・HTML構造仕様 (`index.html`)
+
+検索フォームコンテナ（`#search-form` の親ラッパー）内に、以下の構造を配置する。
+
+```html
+<!-- 住所・施設名 検索バー & 候補ドロップダウンコンテナ -->
+<div class="flex-1 max-w-md mx-3 relative" id="search-container">
+  <form id="search-form" class="relative flex items-center">
+    <input
+      type="text"
+      id="search-input"
+      placeholder="住所・駅名・施設名を入力して検索..."
+      class="w-full pl-9 pr-10 py-1.5 text-xs sm:text-sm bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
+      autocomplete="off"
+      aria-autocomplete="list"
+      aria-controls="search-results-dropdown"
+      aria-expanded="false"
+    />
+    <i class="fa-solid fa-magnifying-glass absolute left-3 text-gray-400 text-xs" id="search-glass-icon"></i>
+    <button
+      type="submit"
+      id="search-btn"
+      class="absolute right-1.5 p-1 px-2.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition shadow-sm flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
+      title="検索実行"
+    >
+      <i class="fa-solid fa-spinner fa-spin hidden" id="search-spinner"></i>
+      <span id="search-btn-text">検索</span>
+    </button>
+  </form>
+
+  <!-- 候補一覧ドロップダウン (初期状態: hidden) -->
+  <div
+    id="search-results-dropdown"
+    class="absolute left-0 right-0 top-full mt-1.5 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden hidden max-h-80 overflow-y-auto divide-y divide-gray-100"
+    role="listbox"
+    aria-label="検索候補一覧"
+  >
+    <!-- JSから動的に候補行 (<div role="option" class="search-result-item ...">) が生成される -->
+  </div>
+</div>
 ```
 
 ---
@@ -499,52 +275,44 @@ export class App {
 ## 4. テスト戦略 (Test Strategy)
 
 ### 4.1 単体テスト方針 (Unit Testing)
-- **テスト実行環境**:
-  - Node.js 18+ の組み込みテストランナー（`node --test`）を使用する。
-  - 追加の外部テストフレームワーク（npmパッケージインストール）を不要とし、軽量・高速に実行できる構成とする。
-- **対象モジュールとテスト項目**:
-  1. `tests/config.test.js`:
-     - `APP_CONFIG` オブジェクトが `Object.freeze` で凍結されていること。
-     - タイルURLテンプレートに必要なプレースホルダー（`{z}`, `{x}`, `{y}`, `{pref}`）が存在すること。
-     - 47都道府県の都道府県コードが正しく定義されていること。
-     - サンプル地点リストが4件以上定義され、必要なプロパティを持っていること。
-  2. `tests/geocoding.test.js`:
-     - `extractPrefCodeFromMuniCd`: "27100" -> "27", "01100" -> "01" の正常抽出、null/短文字列時のフォールバック。
-     - `reverseGeocodePrefCode`: モックAPIレスポンスから都道府県コードを正確に取得できること。
-     - `geocode`: モックAPIレスポンスから座標 `[lat, lng]`（反転順序）を正確にパースできること。
-  3. `tests/shelter.test.js`:
-     - `getTileCoordinate`: 新大阪駅座標（lat: 34.7263, lng: 135.4973, zoom: 10）における (x, y) が正しいタイル番号になること。
-     - `calculateDistanceKm`: 新大阪駅〜大阪駅間の距離が正しく約 2.8km 前後として計算されること（Haversine式の精度）。
-     - 徒歩所要時間計算: 迂回係数 1.25、分速 80m、分単位切り上げの整合性。
-     - `checkIsWelfare`: `welfare='1'`, `is_welfare='1'`, `remarks` 含有、施設名キーワード（福祉、デイサービス等）によるフラグ判定の網羅性。
-     - 重複マージ: 同一名称・同一座標のフィーチャが正しく1レコードに統合され、対応カテゴリが結合されること。
+- **テストランナー**: Node.js 18+ 組み込みテストランナー（`node --test`）。
+- **対象ファイル**: `tests/geocoding.test.js`（既存テスト35件の保護と、新規テストの追加）。
+- **主要検証項目**:
+  1. **クエリ正規化**:
+     - 全角英数・記号（「新宿　駅」→「新宿 駅」）の半角・スペース統一。
+  2. **スマートリランキング計算ロジック**:
+     - 完全一致（タイトルがクエリと同一）が最高スコア（100点ベース）を獲得すること。
+     - 行政階層スコア（東京都・新宿区が町村より加点されること）。
+     - 距離ペナルティ（同一タイトルまたは近似スコア時、現在中心座標に近い候補が上位になること）。
+  3. **GSI / OSM ハイブリッド取得と統合**:
+     - 「新宿駅」検索のモック時、GSIが山形県朝日町新宿を返し、OSMが東京都新宿区の新宿駅を返した場合に、統合リランキングによって「東京都新宿区の新宿駅」が配列のインデックス0（最上位）になること。
+     - 重複候補（近接座標かつ類似名称）が適切にマージまたはスコアリングされること。
+  4. **耐障害性（片肺運転）**:
+     - OSM Nominatim API が 500 またはネットワークエラーで拒否された場合、GSIの結果のみで候補が返却されること。
+     - GSI API が失敗した場合、OSM Nominatim の結果のみで候補が返却されること。
+  5. **高確度判定 (`isHighConfidence`)**:
+     - クエリとタイトルが完全一致し、スコアが閾値（85以上）を満たす場合のみ `true` になること。
+     - 曖昧な部分一致のみの場合は `false` となること。
+  6. **後方互換性 (`geocode`)**:
+     - `GeocodingService.geocode(query)` が既存どおり `{ lat, lng, title, prefCode }` を返し、最上位候補の情報と一致すること。
 
 ### 4.2 結合テスト方針 (Integration Testing)
-- **テスト実行環境**:
-  - ローカルWebサーバー（例: `npx serve .` または `python -m http.server 8000`）を起動し、ブラウザ（Chrome / Edge / Firefox）上で手動およびシナリオ検証を実施。
-- **検証シナリオ**:
-  - **シナリオ 1: 初回起動とモーダル動作**
-    - ページアクセス時にウェルカムモーダルが表示される。
-    - 「現在地を取得せずに開始」をクリックすると、新大阪駅周辺が表示され、周辺避難所リスト（最大50件）がレンダリングされる。
-  - **シナリオ 2: 住所検索機能**
-    - ヘッダー検索入力に「東京都千代田区」と入力しEnterまたは検索ボタンを押下。
-    - 地図が千代田区（皇居・東京駅周辺）に移動し、ピンが立つ。
-    - 都道府県コードが "13" に自動更新され、津波・土砂レイヤーのURLが更新される。
-  - **シナリオ 3: サンプル地点切り替え**
-    - 「北海道札幌 (土砂)」ボタンをクリック。
-    - 地図が札幌手稲に移動し、土砂災害警戒区域チェックボックスが自動的にONになり、該当レイヤーが地図に重畳される。
-  - **シナリオ 4: 避難所マーカーとリストのインタラクション**
-    - サイドバーの避難所カードをクリックすると、地図が該当地点にズームイン（Zoom 16）し、ポップアップが開く。
-    - 地図上のピンをクリックすると、ポップアップが開く。
-    - 福祉避難所（紫色ピン＋車椅子アイコン）と一般避難所（青色ピン＋建物アイコン）が明確に区別されている。
-  - **シナリオ 5: ハザードレイヤーのトグル**
-    - 「洪水浸水想定区域」チェックボックスをON/OFFし、タイルの表示・非表示が滑らかに切り替わること。
+ローカルWebサーバー環境にて、ブラウザ操作により受け入れ基準 AC-9 を網羅検証する。
 
-### 4.3 回帰テスト観点・ユーザーマスター削除検証
-- **削除項目の完全排除検証**:
-  - `index.html` 内に `#user-badge`、`#user-name` 要素が存在しないこと。
-  - スクリプト内に `google.script.run`、`<?= ... ?>`、`UserService`、`AdminService` の残存が一切ないこと。
-  - ブラウザのDevToolsコンソールにエラー（赤字ログ）が出力されていないこと。
+| シナリオID | テスト手順 | 期待される結果 |
+| :--- | :--- | :--- |
+| **IT-01: 新宿駅検索** | 検索窓に「新宿駅」と入力して検索ボタン押下 | ドロップダウン最上位に「新宿駅（東京都新宿区）」が表示され、山形県朝日町への誤ジャンプが発生しないこと。候補クリックで新宿駅周辺へ移動し避難所がロードされること。 |
+| **IT-02: ランドマーク検索** | 「東京タワー」「博多駅」「渋谷駅」「新大阪駅」で検索 | 該当する正確な施設・駅名候補が上位に提示されること。 |
+| **IT-03: 候補ドロップダウン表示** | 曖昧な地名（「富士見」「本町」など）で検索 | 複数候補が住所・距離付きで一覧表示され、ユーザーが任意の地点を選択できること。 |
+| **IT-04: ドロップダウン開閉操作** | 候補表示中に検索窓外をクリック、またはESCキー押下 | ドロップダウンが安全に閉じ、地図操作に復帰できること。 |
+| **IT-05: 該当なし検索** | 「zzxyy9999」等の実在しない地名で検索 | 誤ジャンプせず、スピナーが停止し、「該当する場所が見つかりませんでした」の案内と検索ヒント（市区町村名付加）がトースト表示されること。 |
+| **IT-06: 連打防止・スピナー** | 検索ボタン押下中 | 検索ボタンが disable 化され、スピナーアイコンが表示されて二重リクエストが防止されること。 |
+
+### 4.3 回帰テスト観点
+- 既存の全単体テスト（35件）が `node --test tests/*.test.js` で引き続きオールグリーン（PASS）であること。
+- サンプル地点ジャンプ（大阪淀川、札幌手稲、広島八木、静岡三保）が正常に動作し、ハザードレイヤーの切り替えが機能すること。
+- 現在地取得（Geolocation API）および初期位置（新大阪駅周辺）フォールバックが正常に動作すること。
+- ユーザーマスター関連コード（`#user-badge` 等）が混入していないこと。
 
 ---
 
@@ -552,210 +320,217 @@ export class App {
 
 ```mermaid
 flowchart TD
-    TASK001["TASK-001: 共通設定モジュール (config.js)"]
-    TASK002["TASK-002: ジオコーディングモジュール (geocoding-service.js)"]
-    TASK003["TASK-003: 避難所データ取得・計算モジュール (shelter-service.js)"]
-    TASK004["TASK-004: 地図描画・レイヤー管理モジュール (map-service.js)"]
-    TASK005["TASK-005: UI制御・DOM管理モジュール (ui-controller.js)"]
-    TASK006["TASK-006: HTMLマークアップ & CSSスタイリング (index.html, style.css)"]
-    TASK007["TASK-007: メインオーケストレータ & イベント調停 (app.js)"]
-    TASK008["TASK-008: 単体テスト自動化スイート構築 (tests/)"]
+    TASK009["TASK-009: 共通設定モジュールの拡張 (config.js)"]
+    TASK010["TASK-010: HTML・CSSマークアップ拡張 (index.html, style.css)"]
+    TASK011["TASK-011: ジオコーディングハイブリッド検索の実装 (geocoding-service.js)"]
+    TASK012["TASK-012: UIコントローラー候補リスト描画の実装 (ui-controller.js)"]
+    TASK013["TASK-013: メインオーケストレータ調停ロジックの実装 (app.js)"]
+    TASK014["TASK-014: ジオコーディング単体テストの拡充 (tests/geocoding.test.js)"]
+    TASK015["TASK-015: エンドツーエンド総合検証 & AC-9受入確認"]
 
-    TASK001 --> TASK002
-    TASK001 --> TASK003
-    TASK001 --> TASK004
-    TASK001 --> TASK005
-    TASK001 --> TASK006
-    TASK002 & TASK003 & TASK004 & TASK005 & TASK006 --> TASK007
-    TASK001 & TASK002 & TASK003 --> TASK008
+    TASK009 --> TASK010
+    TASK009 --> TASK011
+    TASK010 --> TASK012
+    TASK011 & TASK012 --> TASK013
+    TASK011 --> TASK014
+    TASK013 & TASK014 --> TASK015
 ```
 
 ---
 
-### タスク [TASK-001]: 共通設定モジュール (`js/config.js`) の実装
-- **ID**: `TASK-001`
-- **目的**: アプリケーション全体で使用する定数、APIエンドポイント、タイルURLテンプレート、都道府県コードマップ、福祉キーワード、サンプル地点データを一元管理するモジュールを作成する。
+### タスク [TASK-009]: 共通設定モジュールの拡張 (`js/config.js`)
+- **ID**: `TASK-009`
+- **目的**: OSM Nominatim API エンドポイント、検索リランキング重み付け係数、候補最大表示件数、確度判定閾値の設定を `APP_CONFIG` に追加する。
 - **入力**:
-  - `docs/architecture.md` セクション 2.2, 3.3
-  - 本書 セクション 3.2 (1)
+  - `docs/architecture.md` セクション 2.2, 3.2
+  - 本書 セクション 3.1 (3)
 - **期待される結果**:
-  - `js/config.js` が作成され、不変オブジェクト `APP_CONFIG` がエクスポートされる。
+  - `js/config.js` の `APP_CONFIG` に `API_ENDPOINTS.osmSearch` および `SEARCH_CONFIG`（`MAX_CANDIDATES`, `HIGH_CONFIDENCE_THRESHOLD`, `WEIGHTS`）が定義され、`Object.freeze` で保護される。
 - **対象ファイル**:
   - `js/config.js`
-- **依存関係**: なし（最優先着手）
+- **依存関係**: なし（既存 TASK-001 の拡張）
 - **受け入れ基準**:
-  - すべての定数値（歩行速度80m/分、迂回係数1.25、初期新大阪座標、タイルURLテンプレート、47都道府県コード、福祉キーワード12種、サンプル地点4件）が漏れなく定義されていること。
-  - `Object.freeze` で保護され、外部から意図せず変更できないこと。
+  - `APP_CONFIG.API_ENDPOINTS.osmSearch` が `'https://nominatim.openstreetmap.org/search'` として定義されていること。
+  - `APP_CONFIG.SEARCH_CONFIG.MAX_CANDIDATES` が 5 として定義されていること。
+  - `APP_CONFIG.SEARCH_CONFIG.HIGH_CONFIDENCE_THRESHOLD` が 85 として定義されていること。
+  - 既存の定数（タイルURL、災害種別、都道府県コードマップ、サンプル地点）が一切破壊されていないこと。
 - **検証方法**:
-  - `node -e "import('./js/config.js').then(m => console.log(Object.keys(m.APP_CONFIG)))"` を実行し、キー一覧が出力されることを確認。
+  - `node -e "import('./js/config.js').then(m => console.log(m.APP_CONFIG.SEARCH_CONFIG))"` を実行し、追加された設定が正常に出力されることを確認。
+  - `node --test tests/config.test.js` が PASS すること。
 
 ---
 
-### タスク [TASK-002]: ジオコーディングモジュール (`js/geocoding-service.js`) の実装
-- **ID**: `TASK-002`
-- **目的**: 国土地理院の住所検索API（`msearch`）および逆ジオコーダAPI（`mreversegeocoder`）と通信し、住所から座標への変換、および座標からJIS都道府県コード（2桁）への変換を行うモジュールを作成する。
+### タスク [TASK-010]: HTML・CSSマークアップ拡張 (`index.html`, `css/style.css`)
+- **ID**: `TASK-010`
+- **目的**: 検索入力欄の下部に候補一覧ドロップダウン用コンテナ（`#search-results-dropdown`）を新設し、検索ボタン内にスピナーアイコンを配置。必要なフローティング・ホバースタイルを追加する。
 - **入力**:
-  - `js/config.js`
-  - 本書 セクション 3.2 (2)
+  - 本書 セクション 3.3
+  - 既存 `index.html`, `css/style.css`
 - **期待される結果**:
-  - `js/geocoding-service.js` が作成され、クラス `GeocodingService` がエクスポートされる。
-- **対象ファイル**:
-  - `js/geocoding-service.js`
-- **依存関係**: `TASK-001`
-- **受け入れ基準**:
-  - `geocode(address)`: 住所検索APIを叩き、`geometry.coordinates` `[lng, lat]` を反転して `{ lat, lng, title, prefCode }` を返却すること。ヒットなし時は `null`。
-  - `reverseGeocodePrefCode(lat, lng)`: 逆ジオコーダを叩き、`muniCd` の上2桁を取得して返却すること。失敗時または海上の場合は `APP_CONFIG.DEFAULT_PREF_CODE`（`"27"`）にフォールバックすること。
-  - `extractPrefCodeFromMuniCd(muniCd)`: 5桁の自治体コードから安全に2桁を抽出できること。
-- **検証方法**:
-  - 正常系・異常系のNode.jsテストスクリプトにより、モックデータおよび実APIに対するリクエスト/レスポンス処理が成功することを確認。
-
----
-
-### タスク [TASK-003]: 避難所データ取得・計算モジュール (`js/shelter-service.js`) の実装
-- **ID**: `TASK-003`
-- **目的**: 指定座標周辺のZoom 10タイル（9タイル×6種別=54リクエスト）を並行取得し、避難所の重複マージ、直線距離・徒歩所要時間の計算、福祉避難所判定、5km以内絞り込み・ソートを行うモジュールを作成する。
-- **入力**:
-  - `js/config.js`
-  - 本書 セクション 3.2 (3)
-- **期待される結果**:
-  - `js/shelter-service.js` が作成され、クラス `ShelterService` がエクスポートされる。
-- **対象ファイル**:
-  - `js/shelter-service.js`
-- **依存関係**: `TASK-001`
-- **受け入れ基準**:
-  - `getTileCoordinate(lat, lng, zoom)`: 緯度経度からZoom 10のタイル座標を数学的に正確に計算できること。
-  - `calculateDistanceKm(lat1, lon1, lat2, lon2)`: Haversineの式により球面上の大円距離を正確に計算できること。
-  - `fetchTileFeatures(url)`: `fetch` によるGeoJSON取得において、HTTP 404を空配列として正常吸収し、インメモリキャッシュ（`Map`）で同一タイルの重複リクエストを抑止すること。
-  - `getNearbyShelters(userLat, userLng, maxRadiusKm)`: 54タイルを `Promise.allSettled()` で並行取得し、重複キー（`${name}_${lat.toFixed(5)}_${lng.toFixed(5)}`）でカテゴリを統合し、5km以内の避難所を徒歩所要時間の昇順でソートして最大50件を返却すること。
-  - `checkIsWelfare(props, name)`: propertiesおよび施設名から福祉避難所を正確に判定できること。
-- **検証方法**:
-  - 単体テスト（`tests/shelter.test.js`）を実行し、計算式、重複統合、ソート上限が正しく機能することを検証。
-
----
-
-### タスク [TASK-004]: 地図描画・レイヤー管理モジュール (`js/map-service.js`) の実装
-- **ID**: `TASK-004`
-- **目的**: Leaflet.js 地図の初期化、国土地理院標準地図タイルのロード、現在地マーカー（パルスアニメーション付き）の配置、都道府県別ハザードレイヤーの動的生成・切り替え、避難所マーカー（一般/福祉アイコン）の描画およびポップアップ連携を行うモジュールを作成する。
-- **入力**:
-  - `js/config.js`
-  - 本書 セクション 3.2 (4)
-- **期待される結果**:
-  - `js/map-service.js` が作成され、クラス `MapService` がエクスポートされる。
-- **対象ファイル**:
-  - `js/map-service.js`
-- **依存関係**: `TASK-001`
-- **受け入れ基準**:
-  - `initMap`: `#map` コンテナに Leaflet 地図インスタンスを生成し、国土地理院タイルを配置すること。
-  - `setLocationMarker`: 現在地ピンを配置し、地図をパン・ズームすること。
-  - `updateHazardLayers(prefCode)`: 土砂・津波レイヤーを新しい都道府県コードのURLで再構築し、現在のON/OFF状態を維持して地図に反映すること。
-  - `toggleHazardLayer(type, visible)`: 指定レイヤーの表示/非表示を切り替え、表示時は最前面に移動（`bringToFront`）すること。
-  - `renderShelterMarkers(shelters, onMarkerClick)`: 既存マーカーを破棄し、一般避難所（青）と福祉避難所（紫＋リング）のカスタムアイコンでマーカーをプロットし、詳細ポップアップをバインドすること。
-  - `focusShelter(shelter, zoom)`: 指定避難所に地図を移動し、ポップアップを自動展開すること。
-- **検証方法**:
-  - ブラウザ検証およびJSDoc型検証。
-
----
-
-### タスク [TASK-005]: UI制御・DOM管理モジュール (`js/ui-controller.js`) の実装
-- **ID**: `TASK-005`
-- **目的**: 全画面ローディング表示、トースト通知、ウェルカムモーダル開閉、サイドバー開閉、避難所カードリストの描画、ハザードチェックボックス制御など、DOM操作を一括管理するモジュールを作成する（Sharedライブラリ思想に準拠）。
-- **入力**:
-  - `js/config.js`
-  - 本書 セクション 3.2 (5)
-- **期待される結果**:
-  - `js/ui-controller.js` が作成され、クラス `UIController` がエクスポートされる。
-- **対象ファイル**:
-  - `js/ui-controller.js`
-- **依存関係**: `TASK-001`
-- **受け入れ基準**:
-  - `showLoading(msg)` / `hideLoading()`: 全画面スピナーオーバーレイの表示と非表示を確実に制御できること。
-  - `showToast(msg, isError, autoHideMs)` / `dismissToast()`: トースト通知メッセージの表示、アイコン切り替え（情報/警告）、自動非表示タイマーを制御できること。
-  - `showWelcomeModal()` / `hideWelcomeModal()`: 初回モーダルの表示・非表示を制御できること。
-  - `toggleSidebar()` / `closeSidebar()`: モバイル画面でのサイドバードロワーの開閉を制御できること。
-  - `renderShelterList(shelters, onCardClick)`: 避難所カード群をDOM生成し、一般/福祉バッジ、所要時間、距離、対応災害種別、住所を美しくフォーマットして表示すること。件数が0件の場合は適切な空状態メッセージを表示すること。
-- **検証方法**:
-  - ブラウザDOM検証。
-
----
-
-### タスク [TASK-006]: HTMLマークアップ & CSSスタイリング (`index.html`, `css/style.css`) の実装
-- **ID**: `TASK-006`
-- **目的**: 静的HTMLアプリケーションの骨格となる `index.html` およびカスタムスタイル `css/style.css` を作成する。旧GASテンプレートタグやユーザーマスターUI（`#user-badge`）を完全に排除し、レスポンシブな最新UIを構築する。
-- **入力**:
-  - `docs/architecture.md` セクション 2.2
-  - 旧 `Index.html`, `StyleSheet.html` のデザイン資産
-- **期待される結果**:
-  - `index.html` および `css/style.css` が作成される。
+  - `index.html` にドロップダウンコンテナおよびスピナーが配置され、アクセシビリティ属性（`role="listbox"`, `aria-autocomplete` 等）が付与される。
+  - `css/style.css` に候補リスト用のスタイル（最大高さ、スクロール、アクティブ状態、バッジ）が追加される。
 - **対象ファイル**:
   - `index.html`
   - `css/style.css`
-- **依存関係**: `TASK-001`
+- **依存関係**: `TASK-009`
 - **受け入れ基準**:
-  - **ユーザーマスターUIの完全排除**: ヘッダーにユーザー情報バッジ（`#user-badge`）が存在しないこと。
-  - ヘッダーに「タイトル」「住所検索バー（input + 検索ボタン）」「現在地を取得ボタン」が配置されていること。
-  - サイドバーに「レイヤー切替チェックボックス」「ハザード凡例アコーディオン」「サンプル地点移動ボタン群」「避難所リストコンテナ」「件数バッジ」が配置されていること。
-  - メイン領域に `#map` コンテナ、トースト通知コンテナ、ローディングオーバーレイ、ウェルカムモーダルが配置されていること。
-  - Tailwind CSS, Leaflet CSS/JS, FontAwesome のCDNリンクが正しく指定されていること。
-  - `<script type="module" src="js/app.js"></script>` によりモジュールが読み込まれていること。
-  - `css/style.css` に地図の全画面高さ計算、カスタムスクロールバー、現在地パルスアニメーション、マーカー用スタイルが定義されていること。
+  - `#search-results-dropdown` が `#search-input` の直下に配置され、初期状態で `hidden` クラスが付与されていること。
+  - `#search-spinner` が検索ボタン内に配置され、初期状態で `hidden` であること。
+  - ドロップダウンがデスクトップ・モバイル双方で検索バーの幅いっぱいに自然に広がり、z-index 競合で Leaflet 地図に隠れないこと（`z-50` 以上）。
+  - 各候補行のホバー効果（背景色変化、カーソルポインター）が設定されていること。
 - **検証方法**:
-  - HTML構文検証、ブラウザでのレスポンシブ表示（デスクトップ・モバイル）確認。
+  - ブラウザで `index.html` を開き、要素検証で `#search-results-dropdown` および `#search-spinner` の構造とCSSプロパティを確認。
 
 ---
 
-### タスク [TASK-007]: メインオーケストレータ (`js/app.js`) の実装と全体統合
-- **ID**: `TASK-007`
-- **目的**: 各サービス・コントローラーを結合し、URLパラメータ解析、イベントリスナー登録、位置特定から避難所計算・地図描画までのエンドツーエンド処理を調停するメインモジュールを作成する。
+### タスク [TASK-011]: ジオコーディングハイブリッド検索の実装 (`js/geocoding-service.js`)
+- **ID**: `TASK-011`
+- **目的**: 国土地理院住所検索APIとOSM Nominatim APIのハイブリッド並行取得、クエリ正規化、重複排除、スマートリランキング（マッチ度＋階層度＋知名度−距離ペナルティ）、および後方互換メソッド `geocode()` の改修を行う。
 - **入力**:
-  - `TASK-001` 〜 `TASK-006` の全成果物
-  - 本書 セクション 3.2 (6)
+  - `docs/architecture.md` セクション 3.1, 3.2, 3.3, ADR-05
+  - 本書 セクション 3.1 (1)(2), 3.2 (1)
+  - `js/config.js`
 - **期待される結果**:
-  - `js/app.js` が作成され、ブラウザ起動時にアプリケーションが完全自律動作する。
+  - `GeocodingService.search(query, options)` が実装され、ソート済みの `GeocodingCandidate[]` が返却される。
+  - 既存の `GeocodingService.geocode(address)` が最上位候補を返す後方互換メソッドとして正常に動作する。
+- **対象ファイル**:
+  - `js/geocoding-service.js`
+- **依存関係**: `TASK-009`
+- **受け入れ基準**:
+  - **クエリ正規化**:
+    - 全角英数・スペースを半角化し、トリムすること。
+  - **ハイブリッド通信**:
+    - GSI住所検索APIを呼び出し、GeoJSONから候補を抽出すること。
+    - 駅名サフィックス（「駅」）や施設名を含む場合、または全般検索時に OSM Nominatim API（`countrycodes=jp`, `limit=5`, `format=json`）を呼び出し、両者を統合すること。
+    - どちらか一方のAPIが失敗しても、成功したAPIの結果のみで候補を返却すること（片肺運転の保証）。
+  - **スマートリランキング**:
+    - クエリ完全一致候補に高得点（100点基準）を付与すること。
+    - 政令指定都市・区・県庁所在地に行政階層スコア（最大30点）を加算すること。
+    - 現在地図中心（`centerLat`, `centerLng`）が渡された場合、直線距離に応じた正規化ペナルティ（最大15点減点）を適用すること。
+    - 総合スコア降順にソートし、最大 `MAX_CANDIDATES` 件を返却すること。
+  - **高確度フラグ判定**:
+    - クエリ完全一致かつスコアが `HIGH_CONFIDENCE_THRESHOLD` 以上の場合は `isHighConfidence = true`、それ以外は `false` とすること。
+  - **後方互換性**:
+    - `geocode(address)` は `search(address)` の最上位結果から `{ lat, lng, title, prefCode }` を返却し、未検出時は `null` を返却すること。
+- **検証方法**:
+  - 単体テスト（`tests/geocoding.test.js`）を実行し、「新宿駅」で東京都新宿区の候補が最上位になること、各スコアリング式が正しく評価されることを確認。
+
+---
+
+### タスク [TASK-012]: UIコントローラー候補リスト描画の実装 (`js/ui-controller.js`)
+- **ID**: `TASK-012`
+- **目的**: 検索候補一覧ドロップダウンのDOM生成・描画、距離表示、選択イベントの発火、非表示制御、および検索中スピナー/ボタン無効化制御を実装する。
+- **入力**:
+  - 本書 セクション 3.2 (2), 3.3
+  - `js/ui-controller.js`
+- **期待される結果**:
+  - `UIController.showSearchResults(candidates, onSelect)`, `UIController.hideSearchResults()`, `UIController.setSearchLoading(isLoading)` が実装される。
+- **対象ファイル**:
+  - `js/ui-controller.js`
+- **依存関係**: `TASK-010`, `TASK-011`
+- **受け入れ基準**:
+  - `showSearchResults(candidates, onSelect)`:
+    - `#search-results-dropdown` の `hidden` を解除して展開すること。
+    - 各候補カードに「名称（title）」「詳細住所（address）」「提供元バッジ（国土地理院 / OSM）」「直線距離（例: 約3.2km）」を綺麗にレンダリングすること。
+    - **XSS対策**: テキスト挿入時は必ず `escapeHtml` または `textContent` を使用し、安全にレンダリングすること。
+    - 各候補カードのクリック時に、`hideSearchResults()` を実行した上で `onSelect(candidate)` コールバックを呼び出すこと。
+  - `hideSearchResults()`:
+    - `#search-results-dropdown` に `hidden` を付与し、内部HTMLをクリアすること。
+  - `setSearchLoading(isLoading)`:
+    - `isLoading = true` のとき、検索ボタン内のスピナー（`#search-spinner`）を表示し、検索テキストを非表示または調整し、ボタン（`#search-btn`）を `disabled` にすること。
+    - `isLoading = false` のとき、元の状態に復帰させること。
+- **検証方法**:
+  - ブラウザコンソールからの直接関数呼び出し検証、およびUI手動操作確認。
+
+---
+
+### タスク [TASK-013]: メインオーケストレータ調停ロジックの実装 (`js/app.js`)
+- **ID**: `TASK-013`
+- **目的**: 住所検索フォーム送信時の確度別フロー（高確度単一ならダイレクト移動、複数/曖昧ならドロップダウン提示、0件なら案内トースト）、およびドロップダウン外クリック・ESCキーによるクローズ調停を実装する。
+- **入力**:
+  - `docs/architecture.md` セクション 3.1, ADR-06, AC-9
+  - 本書 セクション 3.2 (3)
+  - `js/app.js`
+- **期待される結果**:
+  - `App.searchAddress(query)` が改修され、高精度検索・候補選択UIの統合ライフサイクルが完成する。
+  - ドロップダウン外クリックおよびESCキーのイベントリスナーが登録される。
 - **対象ファイル**:
   - `js/app.js`
-- **依存関係**: `TASK-001` 〜 `TASK-006`
+- **依存関係**: `TASK-011`, `TASK-012`
 - **受け入れ基準**:
-  - `DOMContentLoaded` で初期化処理が開始されること。
-  - URLクエリパラメータ（`?address=...` または `?lat=...&lng=...`）がある場合は該当地点を優先検索し、ない場合はウェルカムモーダルを表示すること。
-  - 住所検索フォームで検索実行時、`GeocodingService.geocode` を呼び出して該当座標へスムーズに移動し、避難所データが再計算・描画されること。
-  - 「現在地を取得」ボタン押下時、ブラウザの Geolocation API を呼び出して現在地へ移動すること。失敗時はトースト通知を表示し、初期位置へフォールバックすること。
-  - サンプル地点ボタン押下時、該当地点へ移動し、該当ハザードレイヤーが自動有効化されること。
-  - 避難所カードクリック時に該当マーカーへのパン・ポップアップ展開が行われること。
+  - 検索実行時、現在の地図中心座標（`MapService.getMapInstance()?.getCenter()` 等）を取得し、`GeocodingService.search(query, { centerLat, centerLng })` に渡すこと。
+  - 検索開始時に `UIController.setSearchLoading(true)` を呼び出し、完了時に確実に `UIController.setSearchLoading(false)` を呼び出すこと（finallyブロック等）。
+  - **確度別分岐**:
+    - `candidates.length === 1 && candidates[0].isHighConfidence`: ドロップダウンを出さず、即座に該当地点へ移動（`updateLocation`）し完了トーストを表示すること。
+    - `candidates.length >= 1`（上記以外）: `UIController.showSearchResults(candidates, (c) => this.updateLocation(c.lat, c.lng, c.title, 15, c.prefCode))` を呼び出すこと。
+    - `candidates.length === 0`: 誤ジャンプせず、`UIController.showToast('該当する場所が見つかりませんでした。市区町村名を追加して検索してみてください', true)` を表示すること。
+  - **クローズ制御**:
+    - `document` に対するクリックイベントで、クリック先が `#search-container` 外である場合に `UIController.hideSearchResults()` を呼び出すこと。
+    - `keydown` イベントで、`e.key === 'Escape'` の場合に `UIController.hideSearchResults()` を呼び出すこと。
 - **検証方法**:
-  - ブラウザでのエンドツーエンド操作検証（統合シナリオテスト）。
+  - ブラウザでの各検索クエリ入力テスト、ドロップダウン選択テスト、ESC/外側クリックテスト。
 
 ---
 
-### タスク [TASK-008]: 単体テスト自動化スイートの構築 (`tests/`)
-- **ID**: `TASK-008`
-- **目的**: コアロジック（定数、ジオコーディング補助処理、タイル計算、距離・徒歩時間計算、福祉避難所判定、重複マージ）を自動検証するテストスクリプトを作成し、テスト実行コマンドを確立する。
+### タスク [TASK-014]: ジオコーディング単体テストの拡充 (`tests/geocoding.test.js`)
+- **ID**: `TASK-014`
+- **目的**: 新設された `GeocodingService.search()` のクエリ正規化、スマートリランキング、距離バイアス、高確度判定、エラーフォールバック、および後方互換性 `geocode()` を網羅するテストケースを追加する。
 - **入力**:
-  - `js/config.js`
   - `js/geocoding-service.js`
-  - `js/shelter-service.js`
+  - 既存 `tests/geocoding.test.js`
 - **期待される結果**:
-  - `tests/config.test.js`, `tests/geocoding.test.js`, `tests/shelter.test.js` が作成され、`node --test` で全テストが PASS すること。
+  - `tests/geocoding.test.js` に `search` 関連の網羅的なテストケースが追加され、`node --test tests/*.test.js` で全テストが PASS すること。
 - **対象ファイル**:
-  - `tests/config.test.js`
   - `tests/geocoding.test.js`
-  - `tests/shelter.test.js`
-- **依存関係**: `TASK-001`, `TASK-002`, `TASK-003`
+- **依存関係**: `TASK-011`
 - **受け入れ基準**:
-  - 外部npmライブラリをインストールすることなく、`node --test` コマンド一発で全単体テストが実行され、オールグリーンになること。
+  - モック通信を用いた以下のテストケースを含むこと:
+    1. 「新宿駅」検索モック: GSIが山形県朝日町新宿を返し、OSMが東京都新宿区新宿駅を返した場合、ソート後の第1候補が東京都新宿区の新宿駅となること。
+    2. 距離バイアス検証: 同一名称の複数候補に対し、中心座標に近い候補が高いスコアを得ること。
+    3. 片肺運転検証: OSMまたはGSIのいずれかが500エラーを返しても、生存側の結果で候補リストが生成されること。
+    4. 該当なし検証: 両APIが空配列を返した場合、空配列 `[]` が返却されること。
+    5. 後方互換性検証: `geocode(query)` が第1候補を `{ lat, lng, title, prefCode }` 形式で正しく返却すること。
+  - 既存の35件のテストを一切破壊せず、全テストがグリーンであること。
 - **検証方法**:
-  - 実行コマンド: `node --test tests/*.test.js`
+  - `node --test tests/*.test.js` を実行し、全件パスを確認。
+
+---
+
+### タスク [TASK-015]: エンドツーエンド総合検証 & AC-9受入確認
+- **ID**: `TASK-015`
+- **目的**: ブラウザ実環境（ローカルWebサーバー起動）において、受け入れ基準 AC-9（駅名・施設名特定、候補ドロップダウン、高確度ダイレクト移動、0件案内、操作性）の全項目を手動・結合検証する。
+- **入力**:
+  - `TASK-009` 〜 `TASK-014` の全成果物
+  - `docs/architecture.md` AC-9
+- **期待される結果**:
+  - 全ての受け入れ基準が完全に満たされ、コンソールエラーゼロで滑らかに動作することが確認される。
+- **対象ファイル**:
+  - 全対象ファイル（動作確認のみ）
+- **依存関係**: `TASK-009` 〜 `TASK-014`
+- **受け入れ基準**:
+  - **AC-9.1**: 「新宿駅」「渋谷駅」「博多駅」「新大阪駅」「東京タワー」で検索した際、意図しない遠隔地小字ではなく目的地の正しい候補が提示されること。
+  - **AC-9.2**: 複数候補時、候補ドロップダウン（名称、詳細住所、距離）が展開され、クリックで該当地点へパン＆避難所がロードされること。
+  - **AC-9.3**: 高確度完全一致時、ダイレクト移動とトースト通知が行われること。
+  - **AC-9.4**: 存在しない文字列（例: 「zzxyy9999」）で検索時、誤ジャンプせず適切なエラーヒントが表示されること。
+  - **AC-9.5**: 検索中スピナー表示、多重送信抑止、外側クリック/ESCキーでのクローズが完全に機能すること。
+  - 開発者ツールのコンソールに予期せぬエラーや未処理の例外が出力されないこと。
+- **検証方法**:
+  - ローカルWebサーバーを起動し、ブラウザで各種クエリ操作を実施して動作を検証。
 
 ---
 
 ## 6. シニアコーダーへの申し送り事項・実装上の注意点
 
-1. **コード省略の完全排除**:
-   - `// TODO: 実装する` や `// 省略...` などのプレースホルダーコードは絶対に記述せず、最初から本番稼働可能な完全なコードを作成してください。
-2. **記号エスケープの注意**:
-   - JavaScriptコード内のパイプ記号（`|`, `||`）や不等号記号（`<`, `>`）がMarkdownやエディタの置換でLaTeXエスケープ（`\|` 等）されないように記述してください。
-3. **CORS とプロトコル制約**:
-   - 本アプリケーションは ES Modules（`import / export`）を使用するため、ブラウザで動作確認する際は `file://` 直開きではなく、必ずローカルHTTPサーバー（`npx serve .` または `python -m http.server 8000`）を起動して確認してください。
-4. **404レスポンスの正常扱い**:
-   - 国土地理院の避難所GeoJSONタイルは、当該タイル内に避難所が存在しない場合に HTTP 404 を返却します。これはエラーではなく「避難所0件」という正常な応答ですので、コンソールに不要な `console.error` を出さず、静かに空配列として処理してください。
-5. **ユーザーマスターの完全撤廃**:
-   - スプレッドシート連携コードや、旧 `UserService.gs` / `AdminService.gs` に由来する処理は一切実装に持ち込まないでください。
+1. **完全実装の徹底（コード省略の禁止）**:
+   - `// TODO: 実装する` や `// 省略...` などの不完全なコードは記述せず、本番稼働可能な完全なコードを作成してください。
+2. **外部API利用規約の厳格遵守**:
+   - OSM Nominatim API へのリクエストに `countrycodes=jp` を付加し、日本国外の無関係な検索を抑止してください。
+   - インクリメンタルサーチ（`input` イベントごとのAPI呼び出し）は絶対に導入せず、フォーム送信（`submit`）時のみ通信を行ってください。
+3. **安全なDOM生成とXSS対策**:
+   - 外部APIから取得した文字列（`title`, `address` 等）をドロップダウンに描画する際は、必ず `UIController.escapeHtml()` または DOM 要素の `textContent` を使用してください。`innerHTML` に未エスケープの文字列を直接結合することは厳禁です。
+4. **型変換と座標順序の確認**:
+   - GSI住所検索APIは GeoJSON 配列 `[経度, 緯度]` です。
+   - OSM Nominatim API はオブジェクト属性 `lat`（緯度文字列）, `lon`（経度文字列）です。
+   - `parseFloat()` による数値変換と、緯度・経度の取り違えがないか厳重に確認してください。
+5. **既存資産の保護**:
+   - 既存のテストスイート（`tests/*.test.js`）が全て PASS することを実装の前後で必ず検証してください。

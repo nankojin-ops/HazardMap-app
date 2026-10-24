@@ -44,26 +44,40 @@
       </div>
     </div>
 
-    <!-- 住所・施設名 検索バー -->
-    <div class="flex-1 max-w-md mx-3">
+    <!-- 住所・施設名 検索バー & 候補ドロップダウンコンテナ -->
+    <div class="flex-1 max-w-md mx-3 relative" id="search-container">
       <form id="search-form" class="relative flex items-center">
         <input
           type="text"
           id="search-input"
-          placeholder="住所・駅名・地名を入力して検索..."
+          placeholder="住所・駅名・施設名を入力して検索..."
           class="w-full pl-9 pr-10 py-1.5 text-xs sm:text-sm bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
           autocomplete="off"
+          aria-autocomplete="list"
+          aria-controls="search-results-dropdown"
+          aria-expanded="false"
         />
-        <i class="fa-solid fa-magnifying-glass absolute left-3 text-gray-400 text-xs"></i>
+        <i class="fa-solid fa-magnifying-glass absolute left-3 text-gray-400 text-xs" id="search-glass-icon"></i>
         <button
           type="submit"
           id="search-btn"
-          class="absolute right-1.5 p-1 px-2.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition shadow-sm"
+          class="absolute right-1.5 p-1 px-2.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition shadow-sm flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
           title="検索実行"
         >
-          検索
+          <i class="fa-solid fa-spinner fa-spin hidden" id="search-spinner"></i>
+          <span id="search-btn-text">検索</span>
         </button>
       </form>
+
+      <!-- 候補一覧ドロップダウン (初期状態: hidden) -->
+      <div
+        id="search-results-dropdown"
+        class="absolute left-0 right-0 top-full mt-1.5 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden hidden max-h-80 overflow-y-auto divide-y divide-gray-100"
+        role="listbox"
+        aria-label="検索候補一覧"
+      >
+        <!-- JSから動的に候補行 (<div role="option" class="search-result-item ...">) が生成される -->
+      </div>
     </div>
 
     <!-- 現在地取得ボタン -->

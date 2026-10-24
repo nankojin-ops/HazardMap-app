@@ -102,3 +102,27 @@ html, body {
   text-decoration: none !important;
   background-color: #1e40af !important;
 }
+
+/* ==========================================================================
+   検索候補一覧ドロップダウン
+   ========================================================================== */
+#search-results-dropdown {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity 0.15s ease-in-out, transform 0.15s ease-in-out;
+}
+
+.search-result-item {
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  cursor: pointer;
+}
+
+.search-result-item:hover,
+.search-result-item:focus {
+  background-color: #f0f7ff;
+}
+
+.search-result-item:active {
+  background-color: #e0effe;
+}
+

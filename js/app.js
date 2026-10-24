@@ -10,8 +10,14 @@ import { MapService } from './map-service.js';
 import { UIController } from './ui-controller.js';
 
 export class App {
-  /** @type {number} レースコンディション防止用の世代管理リクエストカウンタ */
+  /** @type {number} レースコンディション防止用の世代管理リクエストカウンタ (位置更新用) */
   static currentRequestId = 0;
+
+  /** @type {number} レースコンディション防止用の世代管理リクエストカウンタ (住所検索用) */
+  static currentSearchRequestId = 0;
+
+  /** @type {boolean} 住所検索の多重送信防止フラグ */
+  static isSearching = false;
 
   /**
    * アプリケーション初期化エントリポイント
@@ -47,10 +53,26 @@ export class App {
       });
     }
 
+    // ドロップダウン外側クリックで候補一覧を閉じる
+    document.addEventListener('click', (e) => {
+      const searchContainer = document.getElementById('search-container');
+      if (searchContainer && !searchContainer.contains(e.target)) {
+        UIController.hideSearchResults();
+      }
+    });
+
+    // ESCキー押下で候補一覧を閉じる
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        UIController.hideSearchResults();
+      }
+    });
+
     // 現在地取得ボタン (ヘッダー)
     const btnLocation = document.getElementById('btn-current-location');
     if (btnLocation) {
       btnLocation.addEventListener('click', async () => {
+        UIController.hideSearchResults();
         await this.getCurrentLocation(true);
       });
     }
@@ -84,6 +106,7 @@ export class App {
     if (headerLogo) {
       headerLogo.addEventListener('click', async () => {
         if (searchInput) searchInput.value = '';
+        UIController.hideSearchResults();
         await this.updateLocation(
           APP_CONFIG.DEFAULT_LAT,
           APP_CONFIG.DEFAULT_LNG,
@@ -112,6 +135,7 @@ export class App {
         const indexStr = btn.getAttribute('data-sample-index');
         const index = parseInt(indexStr, 10);
         if (!isNaN(index)) {
+          UIController.hideSearchResults();
           await this.moveToSample(index);
           if (window.innerWidth < 1024) {
             UIController.closeSidebar();
@@ -159,31 +183,77 @@ export class App {
   }
 
   /**
-   * 住所検索の実行フロー
+   * 住所・キーワード検索のオーケストレーション（改修）
    * @param {string} query - 住所または施設名
    */
   static async searchAddress(query) {
+    // 多重送信ガード: 検索実行中は後続の送信要求を無視する
+    if (this.isSearching) {
+      return;
+    }
+
     if (!query || typeof query !== 'string' || query.trim() === '') {
       UIController.showToast('住所またはキーワードを入力してください', true);
       return;
     }
 
-    UIController.showLoading(`「${query}」を検索中...`);
+    const trimmedQuery = query.trim();
+    this.isSearching = true;
+    const searchRequestId = ++this.currentSearchRequestId;
+    UIController.setSearchLoading(true);
 
     try {
-      const result = await GeocodingService.geocode(query);
-      if (!result) {
-        UIController.hideLoading();
-        UIController.showToast(`「${query}」に該当する住所・施設が見つかりませんでした`, true);
+      let centerLat = null;
+      let centerLng = null;
+      if (MapService.map && typeof MapService.map.getCenter === 'function') {
+        const center = MapService.map.getCenter();
+        if (center) {
+          centerLat = center.lat;
+          centerLng = center.lng;
+        }
+      }
+
+      const candidates = await GeocodingService.search(trimmedQuery, { centerLat, centerLng });
+
+      // レースコンディション防止ガード: 非同期通信完了後に最新リクエストか検証
+      if (this.currentSearchRequestId !== searchRequestId) {
         return;
       }
 
-      await this.updateLocation(result.lat, result.lng, result.title, 15, result.prefCode);
-      UIController.showToast(`「${result.title}」へ移動しました`);
+      if (!candidates || candidates.length === 0) {
+        UIController.hideSearchResults();
+        UIController.showToast('該当する場所が見つかりませんでした。市区町村名を追加して検索してみてください', true);
+        return;
+      }
+
+      // 単一候補かつ高確度一致（完全一致かつスコア閾値以上）の場合はダイレクト移動
+      if (candidates.length === 1 && candidates[0].isHighConfidence) {
+        UIController.hideSearchResults();
+        const top = candidates[0];
+        await this.updateLocation(top.lat, top.lng, top.title, 15, top.prefCode);
+        UIController.showToast(`「${top.title}」へ移動しました`);
+        return;
+      }
+
+      // 複数候補または曖昧一致の場合はドロップダウン候補リストを表示
+      UIController.showSearchResults(candidates, async (selected) => {
+        if (this.currentSearchRequestId !== searchRequestId) {
+          return;
+        }
+        await this.updateLocation(selected.lat, selected.lng, selected.title, 15, selected.prefCode);
+        UIController.showToast(`「${selected.title}」へ移動しました`);
+      });
     } catch (error) {
-      console.error('住所検索処理エラー:', error);
-      UIController.hideLoading();
-      UIController.showToast('住所の検索中に通信エラーが発生しました', true);
+      if (this.currentSearchRequestId === searchRequestId) {
+        console.error('住所検索処理エラー:', error);
+        UIController.hideSearchResults();
+        UIController.showToast('住所の検索中に通信エラーが発生しました', true);
+      }
+    } finally {
+      this.isSearching = false;
+      if (this.currentSearchRequestId === searchRequestId) {
+        UIController.setSearchLoading(false);
+      }
     }
   }
 
@@ -192,6 +262,7 @@ export class App {
    * @param {boolean} isUserInitiated - ユーザーの明示的操作（ボタン押下）かどうか
    */
   static async getCurrentLocation(isUserInitiated = true) {
+    UIController.hideSearchResults();
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       if (isUserInitiated) {
         UIController.showToast('お使いのブラウザは位置情報取得に対応していません', true);

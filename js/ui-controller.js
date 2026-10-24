@@ -1,6 +1,7 @@
 /**
  * @file ui-controller.js
- * @description UIコンポーネント（ローディング、トースト、モーダル、サイドバー、避難所リストカード）のDOM制御を一元管理するモジュール
+ * @description UIコンポーネント（ローディング、トースト、モーダル、サイドバー、避難所リストカード、
+ * 検索候補ドロップダウン、検索ローディング表示）のDOM制御を一元管理するモジュール
  */
 
 export class UIController {
@@ -288,6 +289,127 @@ export class UIController {
     const cb = document.getElementById(`chk-${type}`);
     if (cb) {
       cb.checked = checked;
+    }
+  }
+
+  /**
+   * 検索バー直下に候補一覧ドロップダウンを表示する (新規メソッド)
+   * @param {Array<Object>} candidates - 表示候補一覧
+   * @param {(candidate: Object) => void} onSelect - 選択時コールバック
+   */
+  static showSearchResults(candidates, onSelect) {
+    const dropdown = document.getElementById('search-results-dropdown');
+    const searchInput = document.getElementById('search-input');
+
+    if (!dropdown) {
+      return;
+    }
+
+    dropdown.innerHTML = '';
+
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      this.hideSearchResults();
+      return;
+    }
+
+    if (searchInput) {
+      searchInput.setAttribute('aria-expanded', 'true');
+    }
+
+    candidates.forEach((candidate) => {
+      const item = document.createElement('div');
+      item.className = 'search-result-item p-3 hover:bg-blue-50 cursor-pointer flex items-start justify-between gap-2 transition select-none';
+      item.setAttribute('role', 'option');
+      item.setAttribute('tabindex', '0');
+
+      // 提供元バッジ
+      const sourceBadge = candidate.source === 'osm'
+        ? '<span class="inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200 shrink-0">OSM</span>'
+        : '<span class="inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">国土地理院</span>';
+
+      // 距離表示 (計算されている場合)
+      const distanceHtml = candidate.distanceKm !== null && candidate.distanceKm !== undefined
+        ? `<span class="text-[11px] text-gray-500 font-medium shrink-0 flex items-center gap-1"><i class="fa-solid fa-route text-gray-400 text-[10px]"></i>約${candidate.distanceKm}km</span>`
+        : '';
+
+      item.innerHTML = `
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5 mb-0.5">
+            ${sourceBadge}
+            <span class="font-bold text-xs sm:text-sm text-gray-900 truncate">${this.escapeHtml(candidate.title)}</span>
+          </div>
+          <p class="text-[11px] sm:text-xs text-gray-500 truncate" title="${this.escapeHtml(candidate.address)}">
+            <i class="fa-solid fa-location-dot mr-1 text-gray-400 text-[10px]"></i>${this.escapeHtml(candidate.address)}
+          </p>
+        </div>
+        ${distanceHtml}
+      `;
+
+      // クリックイベント
+      item.addEventListener('click', () => {
+        this.hideSearchResults();
+        if (typeof onSelect === 'function') {
+          onSelect(candidate);
+        }
+      });
+
+      // キーボード操作サポート (EnterまたはSpaceで選択)
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.hideSearchResults();
+          if (typeof onSelect === 'function') {
+            onSelect(candidate);
+          }
+        }
+      });
+
+      dropdown.appendChild(item);
+    });
+
+    dropdown.classList.remove('hidden');
+  }
+
+  /**
+   * 候補一覧ドロップダウンを非表示にし、DOMをクリアする (新規メソッド)
+   */
+  static hideSearchResults() {
+    const dropdown = document.getElementById('search-results-dropdown');
+    const searchInput = document.getElementById('search-input');
+
+    if (searchInput) {
+      searchInput.setAttribute('aria-expanded', 'false');
+    }
+
+    if (dropdown) {
+      dropdown.classList.add('hidden');
+      dropdown.innerHTML = '';
+    }
+  }
+
+  /**
+   * 検索ボタン・入力欄のローディング状態（スピナー表示・ボタン無効化）を切り替える (新規メソッド)
+   * @param {boolean} isLoading
+   */
+  static setSearchLoading(isLoading) {
+    const searchBtn = document.getElementById('search-btn');
+    const searchSpinner = document.getElementById('search-spinner');
+    const searchBtnText = document.getElementById('search-btn-text');
+
+    if (searchBtn) {
+      searchBtn.disabled = isLoading;
+    }
+
+    if (searchSpinner) {
+      if (isLoading) {
+        searchSpinner.classList.remove('hidden');
+      } else {
+        searchSpinner.classList.add('hidden');
+      }
+    }
+
+    if (searchBtnText) {
+      searchBtnText.textContent = isLoading ? '検索中' : '検索';
     }
   }
 

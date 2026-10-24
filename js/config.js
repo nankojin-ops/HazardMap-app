@@ -42,12 +42,26 @@ export const APP_CONFIG = Object.freeze({
     shelterGeoJson: 'https://cyberjapandata.gsi.go.jp/xyz/{code}/10/{x}/{y}.geojson'
   }),
 
-  /** 国土地理院 外部APIエンドポイント */
+  /** 国土地理院 & 外部APIエンドポイント */
   API_ENDPOINTS: Object.freeze({
     // 逆ジオコーダAPI (LonLatToAddress)
     reverseGeocode: 'https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress',
     // 住所検索API (AddressSearch)
-    addressSearch: 'https://msearch.gsi.go.jp/address-search/AddressSearch'
+    addressSearch: 'https://msearch.gsi.go.jp/address-search/AddressSearch',
+    // OpenStreetMap Nominatim 検索API
+    osmSearch: 'https://nominatim.openstreetmap.org/search'
+  }),
+
+  /** 検索・リランキング関連設定 */
+  SEARCH_CONFIG: Object.freeze({
+    MAX_CANDIDATES: 5,               // ドロップダウン最大表示候補数
+    HIGH_CONFIDENCE_THRESHOLD: 85,   // 単一候補時に自動ジャンプを許可する最低スコア
+    WEIGHTS: Object.freeze({
+      MATCH: 1.0,                    // 文字列マッチ度重み
+      HIERARCHY: 1.0,                // 行政階層・主要度重み
+      IMPORTANCE: 1.0,               // 知名度重み
+      DISTANCE_PENALTY_MAX: 15       // 距離ペナルティ最大減点幅
+    })
   }),
 
   /** 指定緊急避難場所の災害種別コード一覧 (6種別) */
